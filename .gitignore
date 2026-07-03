@@ -1,0 +1,7 @@
+/.agents/
+/node_modules/
+/web/node_modules/
+/web/dist/
+/storage/runs/
+/storage/outputs/
+/storage/prompts/
