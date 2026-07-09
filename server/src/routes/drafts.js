@@ -1,23 +1,18 @@
 import express from "express";
 
-import { runExecutor } from "../services/executorService.js";
 import {
   confirmDraft,
   confirmSingleDraftItem,
   createDraft,
-  createPlanPromptContext,
   deleteDraftBatch,
   deleteDraftItem,
+  executeDraftGeneration,
   getDraftItems,
   hasRunningDraftForCategory,
   listDrafts,
-  saveDraftResult,
-  saveDraftRunLog,
   updateDraftItem,
-  updateDraftStatus,
 } from "../services/draftService.js";
 import { hasRunningTaskForCategory } from "../services/taskService.js";
-import { asyncHandler } from "./asyncHandler.js";
 
 export function createDraftRouter() {
   const router = express.Router();
@@ -30,74 +25,36 @@ export function createDraftRouter() {
     res.json(getDraftItems(Number(req.params.draftId)));
   });
 
-  router.post("/generate", asyncHandler(async (req, res) => {
+  router.post("/generate", (req, res) => {
     const categoryName = String(req.body.categoryName || "").trim();
     const itemCount = Math.min(100, Math.max(1, Number(req.body.itemCount || 6)));
 
     if (!categoryName) {
-      return res.status(400).json({ message: "Category name is required." });
+      return res.status(400).json({ message: "分类名称不能为空。" });
     }
 
     if (hasRunningDraftForCategory(categoryName) || hasRunningTaskForCategory(categoryName)) {
       return res.status(409).json({
-        message: `Category ${categoryName} already has a running draft or task.`,
+        message: `分类「${categoryName}」已有正在执行的草稿或任务，请稍后再试。`,
       });
     }
 
     const draftId = createDraft(categoryName, req.body.goal || "", req.body.executorId);
-    const prompt = createPlanPromptContext({
-      categoryName,
-      goal: req.body.goal || "",
-      itemCount,
-    });
 
-    let run;
-    try {
-      run = await runExecutor({
+    // 异步生成：立即返回批次 ID，前端轮询批次状态直到 ready/failed
+    void executeDraftGeneration(
+      {
+        draftId,
+        categoryName,
+        goal: req.body.goal || "",
+        itemCount,
         executorId: req.body.executorId,
-        promptContent: prompt,
-        runType: "draft-plan",
-        metadata: {
-          draftId,
-          categoryName,
-        },
-      });
-    } catch (error) {
-      updateDraftStatus(draftId, "failed");
-      saveDraftRunLog(draftId, {
-        promptText: prompt,
-        stderrText: error.message,
-      });
-      throw error;
-    }
+      },
+      req.log,
+    );
 
-    saveDraftRunLog(draftId, {
-      promptText: prompt,
-      resultText: run.resultText,
-      stdoutText: run.stdoutText,
-      stderrText: run.stderrText,
-    });
-
-    if (run.status !== "success" || !Array.isArray(run.resultPayload?.items)) {
-      updateDraftStatus(draftId, "failed");
-      return res.status(400).json({
-        message: "Draft generation failed.",
-        run,
-      });
-    }
-
-    saveDraftResult({
-      draftId,
-      categoryName,
-      items: run.resultPayload.items,
-    });
-
-    res.status(201).json({
-      draftId,
-      run,
-      items: getDraftItems(draftId),
-    });
-  }));
+    res.status(202).json({ draftId, async: true });
+  });
 
   router.put("/items/:itemId", (req, res) => {
     res.json(updateDraftItem(Number(req.params.itemId), req.body));
@@ -112,7 +69,7 @@ export function createDraftRouter() {
   router.post("/:draftId/confirm-items", (req, res) => {
     const itemIds = Array.isArray(req.body.itemIds) ? req.body.itemIds : [];
     if (itemIds.length === 0) {
-      return res.status(400).json({ message: "itemIds is required." });
+      return res.status(400).json({ message: "请先勾选要加入的任务项。" });
     }
 
     res.json({

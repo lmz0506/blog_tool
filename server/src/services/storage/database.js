@@ -30,21 +30,13 @@ function seedSettings(db) {
 }
 
 function seedExecutors(db) {
+  // 只在首次初始化时插入种子执行器，避免覆盖用户修改过的配置
   const insertExecutor = db.prepare(`
-    INSERT INTO executors (
+    INSERT OR IGNORE INTO executors (
       id, type, name, command, args_template, working_directory, timeout_ms, enabled
     ) VALUES (
       @id, @type, @name, @command, @argsTemplate, @workingDirectory, @timeoutMs, @enabled
     )
-    ON CONFLICT(id) DO UPDATE SET
-      type = excluded.type,
-      name = excluded.name,
-      command = excluded.command,
-      args_template = excluded.args_template,
-      working_directory = excluded.working_directory,
-      timeout_ms = excluded.timeout_ms,
-      enabled = excluded.enabled,
-      updated_at = CURRENT_TIMESTAMP
   `);
 
   insertExecutor.run({
@@ -57,11 +49,11 @@ function seedExecutors(db) {
       "-s",
       "workspace-write",
       "--add-dir",
-      "E:\\idea_space\\blog_tool",
+      "{toolRoot}",
       "-",
     ]),
     workingDirectory: "E:\\idea_space\\blog",
-    timeoutMs: 900000,
+    timeoutMs: 1800000,
     enabled: 1,
   });
 
@@ -72,7 +64,7 @@ function seedExecutors(db) {
     command: "C:\\Users\\lmz\\.bun\\bin\\claude.exe",
     argsTemplate: JSON.stringify(["-p", "{promptContent}"]),
     workingDirectory: "E:\\idea_space\\blog",
-    timeoutMs: 900000,
+    timeoutMs: 1800000,
     enabled: 1,
   });
 }
@@ -343,6 +335,65 @@ function backfillDraftTexts(db) {
   });
 }
 
+function migrateExecutorToolRoot(db) {
+  // 历史数据中写死的工具目录改为 {toolRoot} 占位符，运行时自动解析
+  const rows = db.prepare("SELECT id, args_template FROM executors").all();
+  const update = db.prepare(`
+    UPDATE executors
+    SET args_template = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `);
+
+  rows.forEach((row) => {
+    let args;
+    try {
+      args = JSON.parse(row.args_template);
+    } catch {
+      return;
+    }
+
+    if (!Array.isArray(args)) {
+      return;
+    }
+
+    const next = args.map((arg) =>
+      typeof arg === "string" && /idea_space[\\/]+blog_tool\s*$/i.test(arg) ? "{toolRoot}" : arg,
+    );
+
+    if (JSON.stringify(next) !== JSON.stringify(args)) {
+      update.run(JSON.stringify(next), row.id);
+    }
+  });
+}
+
+function migrateCategoriesDefaultPool(db) {
+  // 一次性迁移：所有分类默认加入默认任务池（之后用户仍可单独取消）
+  const marker = db
+    .prepare("SELECT value FROM settings WHERE key = 'migration_default_pool_all'")
+    .get();
+
+  if (marker) {
+    return;
+  }
+
+  db.exec("UPDATE categories SET is_default_pool = 1, updated_at = CURRENT_TIMESTAMP");
+  db.prepare("INSERT INTO settings (key, value) VALUES ('migration_default_pool_all', 'done')").run();
+}
+
+function migrateExecutorTimeout(db) {
+  // 一次性迁移：写一篇文章实测可能超过 15 分钟，默认超时提高到 30 分钟
+  const marker = db
+    .prepare("SELECT value FROM settings WHERE key = 'migration_executor_timeout_30m'")
+    .get();
+
+  if (marker) {
+    return;
+  }
+
+  db.exec("UPDATE executors SET timeout_ms = 1800000, updated_at = CURRENT_TIMESTAMP WHERE timeout_ms = 900000");
+  db.prepare("INSERT INTO settings (key, value) VALUES ('migration_executor_timeout_30m', 'done')").run();
+}
+
 function migrateSchema(db) {
   [
     ["task_runs", "prompt_text TEXT"],
@@ -359,6 +410,9 @@ function migrateSchema(db) {
 
   backfillTaskRunTexts(db);
   backfillDraftTexts(db);
+  migrateExecutorToolRoot(db);
+  migrateCategoriesDefaultPool(db);
+  migrateExecutorTimeout(db);
 }
 
 export async function initializeDatabase() {

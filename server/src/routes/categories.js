@@ -26,7 +26,7 @@ export function createCategoryRouter() {
     try {
       res.status(201).json(createCategory(req.body));
     } catch (error) {
-      const status = String(error.message || "").includes("already exists") ? 409 : 400;
+      const status = String(error.message || "").includes("已存在") ? 409 : 400;
       res.status(status).json({ message: error.message });
     }
   });
@@ -34,13 +34,13 @@ export function createCategoryRouter() {
   router.put("/:categoryId", (req, res) => {
     const categoryId = Number(req.params.categoryId);
     if (!getCategoryById(categoryId)) {
-      return res.status(404).json({ message: "Category not found." });
+      return res.status(404).json({ message: "分类不存在。" });
     }
 
     try {
       res.json(updateCategory(categoryId, req.body));
     } catch (error) {
-      const status = String(error.message || "").includes("already exists") ? 409 : 400;
+      const status = String(error.message || "").includes("已存在") ? 409 : 400;
       res.status(status).json({ message: error.message });
     }
   });

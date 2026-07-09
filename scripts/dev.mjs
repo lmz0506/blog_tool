@@ -30,7 +30,9 @@ function startProcess(name, color, command) {
   return child;
 }
 
-const server = startProcess("server", "34", "npm run dev --workspace server");
+// server 不用 --watch：任务执行动辄数分钟，watch 模式下代码变动/进程异常会自动重启，
+// 直接杀死执行中的 Agent 子进程。需要热重载调试 server 时单独用 npm run dev:server。
+const server = startProcess("server", "34", "npm run start --workspace server");
 const web = startProcess("web", "35", "npm run dev --workspace web");
 
 function shutdown() {

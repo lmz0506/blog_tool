@@ -2,6 +2,9 @@
 /node_modules/
 /web/node_modules/
 /web/dist/
-/storage/runs/
-/storage/outputs/
-/storage/prompts/
+/storage/blog-tool.db
+/storage/blog-tool.db-shm
+/storage/blog-tool.db-wal
+/.idea/
+/.claude/settings.local.json
+*.log

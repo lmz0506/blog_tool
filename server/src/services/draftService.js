@@ -1,4 +1,5 @@
 import { getDatabase } from "./storage/database.js";
+import { runExecutor } from "./executorService.js";
 
 function buildPlanPrompt({ categoryName, goal, itemCount }) {
   return `你正在为博客分类「${categoryName}」生成文章任务计划。
@@ -172,7 +173,7 @@ export function updateDraftItem(itemId, input) {
   const db = getDatabase();
   const current = db.prepare("SELECT * FROM draft_items WHERE id = ?").get(itemId);
   if (!current) {
-    throw new Error(`Draft item not found: ${itemId}`);
+    throw new Error(`草稿任务项不存在：${itemId}`);
   }
 
   db.prepare(`
@@ -198,7 +199,7 @@ export function confirmDraft(draftId, itemIds = null) {
   const db = getDatabase();
   const draft = db.prepare("SELECT * FROM plan_drafts WHERE id = ?").get(draftId);
   if (!draft) {
-    throw new Error(`Draft not found: ${draftId}`);
+    throw new Error(`草稿批次不存在：${draftId}`);
   }
 
   let items = db.prepare(`
@@ -214,7 +215,7 @@ export function confirmDraft(draftId, itemIds = null) {
   }
 
   if (items.length === 0) {
-    throw new Error("Draft has no items to confirm.");
+    throw new Error("没有可确认的草稿任务项。");
   }
 
   const grouped = new Map();
@@ -249,7 +250,7 @@ export function confirmDraft(draftId, itemIds = null) {
       groupItems.length === 1
         ? groupItems[0].title
         : `${draft.category_name} / ${
-            scheduledDate.startsWith("unscheduled-") ? "未排期" : scheduledDate
+            scheduledDate.startsWith("unscheduled-") ? "未排期" : scheduledDate.replace("T", " ")
           } 合并任务`;
 
     const taskInfo = insertTask.run({
@@ -303,11 +304,11 @@ export function deleteDraftBatch(draftId) {
   const db = getDatabase();
   const draft = db.prepare("SELECT * FROM plan_drafts WHERE id = ?").get(draftId);
   if (!draft) {
-    throw new Error(`Draft not found: ${draftId}`);
+    throw new Error(`草稿批次不存在：${draftId}`);
   }
 
   if (draft.status === "running") {
-    throw new Error("Running drafts cannot be deleted.");
+    throw new Error("执行中的草稿批次不能删除。");
   }
 
   db.prepare("DELETE FROM task_runs WHERE draft_id = ?").run(draftId);
@@ -323,16 +324,16 @@ export function confirmSingleDraftItem(itemId) {
   const db = getDatabase();
   const item = db.prepare("SELECT * FROM draft_items WHERE id = ?").get(itemId);
   if (!item) {
-    throw new Error(`Draft item not found: ${itemId}`);
+    throw new Error(`草稿任务项不存在：${itemId}`);
   }
 
   if (item.status === "confirmed") {
-    throw new Error("This draft item is already confirmed.");
+    throw new Error("该任务项已确认过，无需重复加入。");
   }
 
   const draft = db.prepare("SELECT * FROM plan_drafts WHERE id = ?").get(item.draft_id);
   if (!draft) {
-    throw new Error(`Draft not found: ${item.draft_id}`);
+    throw new Error(`草稿批次不存在：${item.draft_id}`);
   }
 
   const insertTask = db.prepare(`
@@ -395,12 +396,12 @@ export function deleteDraftItem(itemId) {
   const db = getDatabase();
   const item = db.prepare("SELECT * FROM draft_items WHERE id = ?").get(itemId);
   if (!item) {
-    throw new Error(`Draft item not found: ${itemId}`);
+    throw new Error(`草稿任务项不存在：${itemId}`);
   }
 
   const draft = db.prepare("SELECT * FROM plan_drafts WHERE id = ?").get(item.draft_id);
   if (draft && draft.status === "running") {
-    throw new Error("Cannot delete items from a running draft.");
+    throw new Error("执行中的批次不能删除任务项。");
   }
 
   db.prepare("DELETE FROM draft_items WHERE id = ?").run(itemId);
@@ -413,4 +414,50 @@ export function deleteDraftItem(itemId) {
 
 export function createPlanPromptContext(input) {
   return buildPlanPrompt(input);
+}
+
+// 草稿生成的后台执行：调用方立即返回，生成结果/失败状态写库，前端轮询批次状态
+export async function executeDraftGeneration({ draftId, categoryName, goal, itemCount, executorId }, logger) {
+  const prompt = buildPlanPrompt({ categoryName, goal, itemCount });
+
+  let run;
+  try {
+    run = await runExecutor({
+      executorId,
+      promptContent: prompt,
+      runType: "draft-plan",
+      metadata: {
+        draftId,
+        categoryName,
+      },
+    });
+  } catch (error) {
+    updateDraftStatus(draftId, "failed");
+    saveDraftRunLog(draftId, {
+      promptText: prompt,
+      stderrText: error.message,
+    });
+    logger?.error(`Draft #${draftId} generation error: ${error.message}`);
+    return;
+  }
+
+  saveDraftRunLog(draftId, {
+    promptText: prompt,
+    resultText: run.resultText,
+    stdoutText: run.stdoutText,
+    stderrText: run.stderrText,
+  });
+
+  if (run.status !== "success" || !Array.isArray(run.resultPayload?.items)) {
+    updateDraftStatus(draftId, "failed");
+    logger?.warn(`Draft #${draftId} generation failed.`);
+    return;
+  }
+
+  saveDraftResult({
+    draftId,
+    categoryName,
+    items: run.resultPayload.items,
+  });
+  logger?.info(`Draft #${draftId} generated ${run.resultPayload.items.length} items.`);
 }

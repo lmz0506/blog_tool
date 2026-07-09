@@ -1,4 +1,5 @@
-const API_BASE_URL = "http://localhost:4321/api";
+// 开发模式（Vite 4173）指向 server 端口；构建产物由 server 托管时走同源相对路径
+const API_BASE_URL = import.meta.env.DEV ? "http://localhost:4321/api" : "/api";
 
 async function request(path, options = {}) {
   const response = await fetch(`${API_BASE_URL}${path}`, {
@@ -11,7 +12,7 @@ async function request(path, options = {}) {
 
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
-    throw new Error(payload.message || `Request failed: ${response.status}`);
+    throw new Error(payload.message || `请求失败：${response.status}`);
   }
 
   return response.json();
@@ -48,6 +49,9 @@ export const api = {
       body: JSON.stringify(payload),
     }),
   listExecutors: () => request("/executors"),
+  discoverExecutors: () => request("/executors/discover"),
+  browsePath: (path = "", includeFiles = false) =>
+    request(`/system/browse?path=${encodeURIComponent(path)}&includeFiles=${includeFiles ? "true" : "false"}`),
   updateExecutor: (executorId, payload) =>
     request(`/executors/${executorId}`, {
       method: "PUT",
@@ -110,6 +114,14 @@ export const api = {
     request(`/tasks/${taskId}/run`, {
       method: "POST",
       body: JSON.stringify(payload),
+    }),
+  pushTask: (taskId) =>
+    request(`/tasks/${taskId}/push`, {
+      method: "POST",
+    }),
+  dequeueTask: (taskId) =>
+    request(`/tasks/${taskId}/dequeue`, {
+      method: "POST",
     }),
   listRuns: () => request("/tasks/runs"),
 };

@@ -9,9 +9,10 @@ export function recoverStaleRunningState() {
     WHERE status = 'running'
   `).run();
 
+  // 程序中断时执行中的任务回到队列，重启后由队列消费者继续执行
   const tasks = db.prepare(`
     UPDATE tasks
-    SET status = 'failed', updated_at = CURRENT_TIMESTAMP
+    SET status = 'queued', updated_at = CURRENT_TIMESTAMP
     WHERE status = 'running'
   `).run();
 
@@ -23,7 +24,7 @@ export function recoverStaleRunningState() {
 
   return {
     drafts: Number(drafts.changes),
-    tasks: Number(tasks.changes),
+    requeuedTasks: Number(tasks.changes),
     runs: Number(runs.changes),
   };
 }

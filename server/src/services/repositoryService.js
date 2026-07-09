@@ -80,15 +80,15 @@ export async function scanRepository() {
   const docsRoot = path.join(repositoryPath, repository.docsDir);
 
   if (!(await pathExists(repositoryPath))) {
-    throw new Error(`Repository path not found: ${repositoryPath}`);
+    throw new Error(`仓库路径不存在：${repositoryPath}`);
   }
 
   if (!(await pathExists(path.join(repositoryPath, ".git")))) {
-    throw new Error(`Not a git repository: ${repositoryPath}`);
+    throw new Error(`该路径不是 git 仓库：${repositoryPath}`);
   }
 
   if (!(await pathExists(docsRoot))) {
-    throw new Error(`Docs directory not found: ${docsRoot}`);
+    throw new Error(`文档目录不存在：${docsRoot}`);
   }
 
   const db = getDatabase();
@@ -128,8 +128,8 @@ export async function scanRepository() {
     });
 
     db.prepare(`
-      INSERT INTO categories (name, display_name, source, enabled, updated_at)
-      VALUES (@name, @displayName, 'blog_scan', 1, CURRENT_TIMESTAMP)
+      INSERT INTO categories (name, display_name, source, enabled, is_default_pool, updated_at)
+      VALUES (@name, @displayName, 'blog_scan', 1, 1, CURRENT_TIMESTAMP)
       ON CONFLICT(name) DO UPDATE SET
         source = 'blog_scan',
         display_name = COALESCE(excluded.display_name, display_name),

@@ -1,6 +1,40 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { promisify } from "node:util";
 
+import { projectRoot } from "../config.js";
 import { getDatabase } from "./storage/database.js";
+
+const execFileAsync = promisify(execFile);
+
+const CANDIDATE_COMMANDS = ["codex", "claude", "gemini", "qwen", "aider", "cursor-agent"];
+
+export async function discoverExecutorCommands() {
+  const finder = process.platform === "win32" ? "where" : "which";
+  const results = [];
+  const seen = new Set();
+
+  for (const name of CANDIDATE_COMMANDS) {
+    try {
+      const args = process.platform === "win32" ? [name] : ["-a", name];
+      const { stdout } = await execFileAsync(finder, args, { windowsHide: true });
+      stdout
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .forEach((line) => {
+          const key = line.toLowerCase();
+          if (!seen.has(key)) {
+            seen.add(key);
+            results.push({ name, command: line });
+          }
+        });
+    } catch {
+      // 未找到该命令，跳过
+    }
+  }
+
+  return results;
+}
 
 function mapExecutor(row) {
   return {
@@ -45,17 +79,37 @@ function extractJsonObject(text) {
   return null;
 }
 
+function writePromptToStdin(child, promptContent) {
+  // stdin 管道断开（子进程提前退出）时若无 error 监听会抛未捕获异常
+  child.stdin.on("error", () => {});
+  child.stdin.write(promptContent);
+  child.stdin.end();
+}
+
+function spawnOptions(executor) {
+  return {
+    cwd: executor.workingDirectory,
+    stdio: ["pipe", "pipe", "pipe"],
+    env: {
+      ...process.env,
+      // 尽量让 Agent 及其子进程以 UTF-8 处理输入输出，减少中文乱码
+      PYTHONIOENCODING: "utf-8",
+      PYTHONUTF8: "1",
+      LANG: "zh_CN.UTF-8",
+      LC_ALL: "zh_CN.UTF-8",
+    },
+  };
+}
+
 function spawnExecutorProcess(executor, args, promptContent) {
   const commandPath = executor.command.toLowerCase();
 
   if (process.platform === "win32" && (commandPath.endsWith(".cmd") || commandPath.endsWith(".bat"))) {
     const child = spawn(executor.command, args, {
-      cwd: executor.workingDirectory,
-      stdio: ["pipe", "pipe", "pipe"],
+      ...spawnOptions(executor),
       shell: true,
     });
-    child.stdin.write(promptContent);
-    child.stdin.end();
+    writePromptToStdin(child, promptContent);
     return child;
   }
 
@@ -64,32 +118,42 @@ function spawnExecutorProcess(executor, args, promptContent) {
       "powershell.exe",
       ["-ExecutionPolicy", "Bypass", "-File", executor.command, ...args],
       {
-        cwd: executor.workingDirectory,
-        stdio: ["pipe", "pipe", "pipe"],
+        ...spawnOptions(executor),
         shell: false,
       },
     );
-    child.stdin.write(promptContent);
-    child.stdin.end();
+    writePromptToStdin(child, promptContent);
     return child;
   }
 
   const child = spawn(executor.command, args, {
-    cwd: executor.workingDirectory,
-    stdio: ["pipe", "pipe", "pipe"],
+    ...spawnOptions(executor),
     shell: false,
   });
-  child.stdin.write(promptContent);
-  child.stdin.end();
+  writePromptToStdin(child, promptContent);
   return child;
 }
 
 function normalizeExecutionError(error, executor) {
   if (error?.code === "ENOENT") {
-    return `Command not found: ${executor.command}.`;
+    return `命令不存在：${executor.command}`;
   }
 
-  return error?.message || "Executor process failed.";
+  return error?.message || "执行器进程执行失败。";
+}
+
+function killProcessTree(child) {
+  // Windows 下 .cmd 经 shell 启动会派生子进程树，只杀父进程会残留孙进程继续运行，
+  // 用 taskkill /T 整树终止
+  if (process.platform === "win32" && child.pid) {
+    spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
+      windowsHide: true,
+      stdio: "ignore",
+    });
+    return;
+  }
+
+  child.kill("SIGTERM");
 }
 
 async function captureExecution(executor, args, promptContent) {
@@ -109,8 +173,8 @@ async function captureExecution(executor, args, promptContent) {
     }
 
     const timer = setTimeout(() => {
-      processError = new Error(`Executor timed out after ${executor.timeoutMs}ms.`);
-      child.kill("SIGTERM");
+      processError = new Error(`执行器超时（${executor.timeoutMs} 毫秒），已终止进程。`);
+      killProcessTree(child);
     }, executor.timeoutMs);
 
     child.stdout.on("data", (chunk) => stdoutChunks.push(chunk));
@@ -152,7 +216,7 @@ export function listExecutors() {
 export function getExecutor(executorId) {
   const row = getDatabase().prepare("SELECT * FROM executors WHERE id = ?").get(executorId);
   if (!row) {
-    throw new Error(`Executor not found: ${executorId}`);
+    throw new Error(`执行器不存在：${executorId}`);
   }
   return mapExecutor(row);
 }
@@ -167,11 +231,11 @@ export function updateExecutor(executorId, input) {
       try {
         argsTemplate = JSON.parse(argsTemplate);
       } catch {
-        throw new Error("argsTemplate must be a valid JSON array.");
+        throw new Error("参数模板必须是合法的 JSON 数组。");
       }
     }
     if (!Array.isArray(argsTemplate) || argsTemplate.some((value) => typeof value !== "string")) {
-      throw new Error("argsTemplate must be an array of strings.");
+      throw new Error("参数模板必须是字符串数组。");
     }
   }
 
@@ -179,7 +243,7 @@ export function updateExecutor(executorId, input) {
   if (input.timeoutMs !== undefined) {
     timeoutMs = Number(input.timeoutMs);
     if (!Number.isFinite(timeoutMs) || timeoutMs < 1000) {
-      throw new Error("timeoutMs must be a number no less than 1000.");
+      throw new Error("超时时间必须是不小于 1000 的数字（毫秒）。");
     }
   }
 
@@ -226,6 +290,7 @@ export async function testExecutor({ executorId, promptContent }) {
     promptFile: "",
     promptContent,
     runDirectory: executor.workingDirectory,
+    toolRoot: projectRoot,
     categoryName: "executor-test",
   };
 
@@ -273,6 +338,7 @@ export async function runExecutor({ executorId, promptContent, runType, metadata
     promptFile: "",
     promptContent,
     runDirectory: executor.workingDirectory,
+    toolRoot: projectRoot,
     categoryName: metadata.categoryName,
   };
   const args = executor.argsTemplate.map((value) => replaceTemplate(value, context));
@@ -280,7 +346,9 @@ export async function runExecutor({ executorId, promptContent, runType, metadata
 
   const resultPayload = extractJsonObject(stdoutText);
   const resultText = resultPayload ? JSON.stringify(resultPayload, null, 2) : null;
-  const status = exitCode === 0 && resultPayload?.marker === "BLOG_TOOL_TASK_DONE" ? "success" : "failed";
+  // 以完成标记为准：Agent 可能在打印完结果后才被超时终止（退出码非 0），
+  // 此时产出已经完成，后续的文章校验环节会兜底验证文件真实性
+  const status = resultPayload?.marker === "BLOG_TOOL_TASK_DONE" ? "success" : "failed";
 
   db.prepare(`
     UPDATE task_runs

@@ -19,12 +19,15 @@ function collectAssetFiles(status) {
     ...status.modified,
   ]);
 
-  return Array.from(candidates).filter((file) => file.replaceAll("\\", "/").startsWith("assets/"));
+  // 只连带提交文章配图目录，避免把仓库里其他无关改动一并提交
+  return Array.from(candidates).filter((file) =>
+    file.replaceAll("\\", "/").startsWith("assets/images/"),
+  );
 }
 
 export async function publishArticleToGit({ repository, task }) {
   if (!task.articlePath) {
-    throw new Error("Task has no articlePath, cannot publish to git.");
+    throw new Error("任务没有文章路径，无法发布到 git。");
   }
 
   const git = simpleGit(repository.path);
@@ -51,9 +54,15 @@ export async function publishArticleToGit({ repository, task }) {
     }
   }
 
+  // push 失败不能掩盖 commit 已成功的事实，单独捕获并记录原因
   let pushResult = null;
+  let pushError = null;
   if (repository.autoPush) {
-    pushResult = await git.push("origin", repository.branch);
+    try {
+      pushResult = await git.push("origin", repository.branch);
+    } catch (error) {
+      pushError = error.message;
+    }
   }
 
   return {
@@ -63,5 +72,16 @@ export async function publishArticleToGit({ repository, task }) {
     files: filesToCommit,
     commitSummary: commitResult?.summary || null,
     pushSummary: pushResult?.pushed || null,
+    ...(pushError ? { pushError } : {}),
+    ...(!repository.autoPush ? { pushSkipped: "自动推送已关闭" } : {}),
+  };
+}
+
+export async function pushRepositoryBranch(repository) {
+  const git = simpleGit(repository.path);
+  await git.push("origin", repository.branch);
+  return {
+    pushed: true,
+    branch: repository.branch,
   };
 }

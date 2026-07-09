@@ -10,9 +10,11 @@ function formatDateOnly(date) {
 }
 
 function buildTaskPrompt({ categoryName, displayCategoryName, task, docsDir, repositoryPath }) {
-  const knowledgePoints = task.items
-    .map((item, index) => `${index + 1}. ${item.title}\n   说明：${item.contentBrief || "无"}`)
-    .join("\n");
+  const knowledgePoints = task.items.length > 0
+    ? task.items
+        .map((item, index) => `${index + 1}. ${item.title}\n   说明：${item.contentBrief || "无"}`)
+        .join("\n")
+    : `（本任务未指定知识点。请先浏览 ${docsDir}/${categoryName}/ 目录下已有的文章标题，然后自主选择一个该分类下有价值、且现有文章尚未覆盖的主题来写作。）`;
 
   return `你正在为博客分类「${displayCategoryName}」编写一篇文章。
 任务标题：${task.title}
@@ -24,7 +26,9 @@ ${knowledgePoints}
 2. 文章必须保存在目录 ${docsDir}/${categoryName}/ 下，目录名必须完全一致，不要新建其他目录。
 3. 生成一篇 Markdown 文章，如果任务包含多个知识点，合并成一篇完整文章。
 4. 文章必须包含完整代码示例和详细讲解。
-5. 文章文件开头必须包含 YAML front-matter，字段和格式如下（category 必须是「${displayCategoryName}」，不要用目录名代替）：
+5. 读写任何文件都必须使用 UTF-8 编码，避免中文乱码。
+6. 严格控制探索范围：最多只允许查看 ${docsDir}/${categoryName}/ 目录下的文件名和文章标题（用于避免主题重复），禁止阅读仓库中的其他任何目录和文件（包括但不限于 .claude、.agents、.codex、_site、node_modules、assets、admin、_layouts、_includes 等），禁止运行构建、测试等无关命令，尽快完成写作。
+7. 文章文件开头必须包含 YAML front-matter，字段和格式如下（category 必须是「${displayCategoryName}」，不要用目录名代替）：
 ---
 layout: doc
 title: 文章标题
@@ -34,10 +38,10 @@ tags:
   - 相关标签1
   - 相关标签2
 ---
-6. 如果文章需要配图，图片保存到仓库的 assets/images/docs/ 目录，并在正文中使用 /assets/images/docs/ 开头的路径引用。
-7. 不要写入任何结果文件。
-8. 你的最终回复必须只包含一个 JSON 对象，不要附加解释文字。
-9. JSON 格式如下：
+8. 如果文章需要配图，图片保存到仓库的 assets/images/docs/ 目录，并在正文中使用 /assets/images/docs/ 开头的路径引用。
+9. 不要写入任何结果文件，不要执行 git 提交或推送。
+10. 你的最终回复必须只包含一个 JSON 对象，不要附加解释文字。
+11. JSON 格式如下：
 {
   "marker": "BLOG_TOOL_TASK_DONE",
   "taskId": ${task.id},
@@ -46,7 +50,7 @@ tags:
   "articlePath": "${docsDir}/${categoryName}/example.md",
   "title": "文章标题"
 }
-10. 最终回复不要输出代码块，不要输出 Markdown，只输出 JSON。`;
+12. 最终回复不要输出代码块，不要输出 Markdown，只输出 JSON。`;
 }
 
 function normalizeNullableText(value) {
@@ -100,10 +104,11 @@ export function listTasks() {
     ORDER BY
       CASE status
         WHEN 'running' THEN 0
-        WHEN 'pending' THEN 1
-        WHEN 'done' THEN 2
+        WHEN 'queued' THEN 1
+        WHEN 'pending' THEN 2
         WHEN 'failed' THEN 3
-        ELSE 4
+        WHEN 'done' THEN 4
+        ELSE 5
       END,
       COALESCE(scheduled_date, '9999-12-31') ASC,
       id ASC
@@ -141,7 +146,7 @@ export function listTasks() {
 export function getTask(taskId) {
   const task = listTasks().find((item) => item.id === Number(taskId));
   if (!task) {
-    throw new Error(`Task not found: ${taskId}`);
+    throw new Error(`任务不存在：${taskId}`);
   }
   return task;
 }
@@ -150,11 +155,11 @@ export function updateTask(taskId, input) {
   const db = getDatabase();
   const current = db.prepare("SELECT * FROM tasks WHERE id = ?").get(taskId);
   if (!current) {
-    throw new Error(`Task not found: ${taskId}`);
+    throw new Error(`任务不存在：${taskId}`);
   }
 
   if (current.status !== "pending") {
-    throw new Error("Only pending tasks can be edited.");
+    throw new Error("只有待执行任务可以编辑。");
   }
 
   db.prepare(`
@@ -186,7 +191,7 @@ export function updateTask(taskId, input) {
     input.items.forEach((itemInput, index) => {
       const currentItem = itemMap.get(Number(itemInput.id));
       if (!currentItem) {
-        throw new Error(`Task item not found: ${itemInput.id}`);
+        throw new Error(`任务知识点不存在：${itemInput.id}`);
       }
 
       updateItem.run({
@@ -309,12 +314,35 @@ function getDefaultTaskRow() {
     ORDER BY
       CASE status
         WHEN 'running' THEN 0
-        WHEN 'pending' THEN 1
-        ELSE 2
+        WHEN 'queued' THEN 1
+        WHEN 'pending' THEN 2
+        ELSE 3
       END,
       id ASC
     LIMIT 1
   `).get();
+}
+
+export function findDefaultTask() {
+  const row = getDatabase()
+    .prepare(`
+      SELECT id, status, category_name
+      FROM tasks
+      WHERE task_type = 'default_random'
+      ORDER BY id DESC
+      LIMIT 1
+    `)
+    .get();
+
+  if (!row) {
+    return null;
+  }
+
+  return {
+    id: Number(row.id),
+    status: row.status,
+    categoryName: row.category_name,
+  };
 }
 
 export function syncDefaultTaskWithPlan() {
@@ -323,7 +351,7 @@ export function syncDefaultTaskWithPlan() {
 
   if (!config.enabled) {
     if (existing?.status === "running") {
-      throw new Error("Cannot disable the built-in default task while it is running.");
+      throw new Error("系统默认任务正在执行，不能关闭。");
     }
 
     if (existing) {
@@ -349,11 +377,11 @@ export function deleteTask(taskId) {
   const db = getDatabase();
   const task = db.prepare("SELECT * FROM tasks WHERE id = ?").get(taskId);
   if (!task) {
-    throw new Error(`Task not found: ${taskId}`);
+    throw new Error(`任务不存在：${taskId}`);
   }
 
   if (task.status === "running") {
-    throw new Error("Running tasks cannot be deleted.");
+    throw new Error("执行中的任务不能删除。");
   }
 
   db.prepare("DELETE FROM task_runs WHERE task_id = ?").run(taskId);

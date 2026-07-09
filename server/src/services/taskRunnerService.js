@@ -34,18 +34,18 @@ function createConflictError(message) {
 export function resolveArticleFile(repository, articlePath) {
   const normalized = String(articlePath || "").trim().replaceAll("\\", "/");
   if (!normalized) {
-    throw new Error("Executor did not report an article path.");
+    throw new Error("执行器没有返回文章路径。");
   }
 
   const docsRoot = path.resolve(repository.path, repository.docsDir);
   const absolutePath = path.resolve(repository.path, normalized);
 
   if (absolutePath !== docsRoot && !absolutePath.startsWith(docsRoot + path.sep)) {
-    throw new Error(`Article path escapes docs directory: ${articlePath}`);
+    throw new Error(`文章路径超出文档目录范围：${articlePath}`);
   }
 
   if (!existsSync(absolutePath)) {
-    throw new Error(`Article file not found: ${absolutePath}`);
+    throw new Error(`文章文件不存在：${absolutePath}`);
   }
 
   return {
@@ -99,106 +99,131 @@ export async function validateArticleFrontMatter({ repository, articlePath, cate
   };
 }
 
-export async function executeTask(taskId, { executorId } = {}) {
+// 进程内执行锁：防止同一任务被并发触发（前端重复点击/浏览器重试/调度器竞争）
+const executingTasks = new Set();
+
+export function isTaskExecuting(taskId) {
+  return executingTasks.has(Number(taskId));
+}
+
+function beginTaskExecution(taskId, { executorId } = {}) {
   const task = getTask(taskId);
   const repository = getRepositorySettings();
 
-  if (task.status !== "pending" && task.status !== "failed") {
-    throw createConflictError("Only pending or failed tasks can be executed.");
+  if (executingTasks.has(task.id) || task.status === "running") {
+    throw createConflictError("该任务正在执行中，请勿重复执行。");
+  }
+
+  if (task.status !== "pending" && task.status !== "failed" && task.status !== "queued") {
+    throw createConflictError("只有待执行、已入队或已失败的任务可以执行。");
   }
 
   if (hasRunningDraftForCategory(task.categoryName) || hasRunningTaskForCategory(task.categoryName, task.id)) {
-    throw createConflictError(`Category ${task.categoryName} already has another running draft or task.`);
+    throw createConflictError(`分类「${task.categoryName}」已有正在执行的草稿或任务，请稍后再试。`);
   }
 
+  executingTasks.add(task.id);
   updateTaskStatus(task.id, "running", { executorId });
 
-  let run;
-  try {
-    const prompt = createTaskPromptContext({
-      task,
-      categoryName: task.categoryName,
-      repository,
-    });
+  return { task, repository, executorId };
+}
 
-    run = await runExecutor({
-      executorId,
-      promptContent: prompt,
-      runType: "write-task",
-      metadata: {
-        taskId: task.id,
+async function completeTaskExecution({ task, repository, executorId }) {
+  try {
+    let run;
+    try {
+      const prompt = createTaskPromptContext({
+        task,
         categoryName: task.categoryName,
-      },
-    });
-  } catch (error) {
-    updateTaskStatus(task.id, "failed", { executorId });
-    throw error;
-  }
+        repository,
+      });
 
-  if (run.status !== "success" || run.resultPayload?.status !== "done") {
-    updateTaskStatus(task.id, "failed", { executorId });
-    return {
-      ok: false,
-      message: "Task execution failed.",
-      task: getTask(task.id),
-      run,
-    };
-  }
+      run = await runExecutor({
+        executorId,
+        promptContent: prompt,
+        runType: "write-task",
+        metadata: {
+          taskId: task.id,
+          categoryName: task.categoryName,
+        },
+      });
+    } catch (error) {
+      updateTaskStatus(task.id, "failed", { executorId });
+      throw error;
+    }
 
-  let validated;
-  try {
-    validated = await validateArticleFrontMatter({
-      repository,
-      articlePath: run.resultPayload.articlePath,
+    if (run.status !== "success" || run.resultPayload?.status !== "done") {
+      updateTaskStatus(task.id, "failed", { executorId });
+      return {
+        ok: false,
+        message: "任务执行失败，请查看日志了解详情。",
+        task: getTask(task.id),
+        run,
+      };
+    }
+
+    let validated;
+    try {
+      validated = await validateArticleFrontMatter({
+        repository,
+        articlePath: run.resultPayload.articlePath,
+        categoryName: task.categoryName,
+        fallbackTitle: run.resultPayload.title,
+      });
+    } catch (error) {
+      updateTaskStatus(task.id, "failed", { executorId });
+      return {
+        ok: false,
+        message: `文章校验失败：${error.message}`,
+        task: getTask(task.id),
+        run,
+      };
+    }
+
+    const completedTask = {
+      ...task,
+      articlePath: validated.relativePath,
+      articleTitle: validated.title || run.resultPayload.title,
+      executorId,
       categoryName: task.categoryName,
-      fallbackTitle: run.resultPayload.title,
-    });
-  } catch (error) {
-    updateTaskStatus(task.id, "failed", { executorId });
+    };
+
+    updateTaskStatus(task.id, "done", completedTask);
+    savePublishedArticle(completedTask);
+
+    let gitPublish;
+    try {
+      gitPublish = await publishArticleToGit({
+        repository,
+        task: completedTask,
+      });
+    } catch (error) {
+      gitPublish = {
+        committed: false,
+        pushed: false,
+        branch: repository.branch,
+        error: error.message,
+      };
+    }
+
+    if (validated.fixedFields.length > 0) {
+      gitPublish = { ...gitPublish, fixedFrontMatterFields: validated.fixedFields };
+    }
+
+    saveTaskPublishResult(task.id, gitPublish);
+
     return {
-      ok: false,
-      message: `Article validation failed: ${error.message}`,
+      ok: true,
       task: getTask(task.id),
       run,
+      gitPublish,
     };
+  } finally {
+    executingTasks.delete(task.id);
   }
+}
 
-  const completedTask = {
-    ...task,
-    articlePath: validated.relativePath,
-    articleTitle: validated.title || run.resultPayload.title,
-    executorId,
-    categoryName: task.categoryName,
-  };
-
-  updateTaskStatus(task.id, "done", completedTask);
-  savePublishedArticle(completedTask);
-
-  let gitPublish;
-  try {
-    gitPublish = await publishArticleToGit({
-      repository,
-      task: completedTask,
-    });
-  } catch (error) {
-    gitPublish = {
-      committed: false,
-      pushed: false,
-      branch: repository.branch,
-      error: error.message,
-    };
-  }
-
-  if (validated.fixedFields.length > 0) {
-    gitPublish = { ...gitPublish, fixedFrontMatterFields: validated.fixedFields };
-  }
-
-  saveTaskPublishResult(task.id, gitPublish);
-
-  return {
-    ok: true,
-    task: getTask(task.id),
-    run,
-    gitPublish,
-  };
+export async function executeTask(taskId, { executorId } = {}) {
+  const context = beginTaskExecution(taskId, { executorId });
+  return completeTaskExecution(context);
 }

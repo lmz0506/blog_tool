@@ -102,11 +102,11 @@ export function getCategoryByName(categoryName) {
 export function createCategory(input) {
   const name = normalizeCategoryName(input.name);
   if (!name) {
-    throw new Error("Category name is required.");
+    throw new Error("分类名称不能为空。");
   }
 
   if (getCategoryByName(name)) {
-    throw new Error(`Category ${name} already exists.`);
+    throw new Error(`分类「${name}」已存在。`);
   }
 
   return upsertCategory({
@@ -118,17 +118,17 @@ export function createCategory(input) {
 export function updateCategory(categoryId, input) {
   const current = getCategoryById(categoryId);
   if (!current) {
-    throw new Error(`Category not found: ${categoryId}`);
+    throw new Error(`分类不存在：${categoryId}`);
   }
 
   const nextName = normalizeCategoryName(input.name || current.name);
   if (!nextName) {
-    throw new Error("Category name is required.");
+    throw new Error("分类名称不能为空。");
   }
 
   const duplicate = getCategoryByName(nextName);
   if (duplicate && duplicate.id !== current.id) {
-    throw new Error(`Category ${nextName} already exists.`);
+    throw new Error(`分类「${nextName}」已存在。`);
   }
 
   return upsertCategory({

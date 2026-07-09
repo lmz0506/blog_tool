@@ -3,58 +3,61 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "./api.js";
 
 const NAV_ITEMS = [
-  { id: "generate", label: "智能任务生成", note: "新建批次" },
+  { id: "generate", label: "智能任务生成", note: "拟定写作计划" },
   { id: "history-categories", label: "智能任务列表", note: "分类 / 批次 / 任务" },
-  { id: "queue-categories", label: "任务列表", note: "分类 / 正式任务" },
-  { id: "settings", label: "配置中心", note: "仓库与执行器" },
+  { id: "queue-categories", label: "任务列表", note: "全部任务 · 筛选排序" },
+  { id: "settings", label: "配置中心", note: "仓库 · 自动化 · 执行器" },
 ];
 
 const PAGE_META = {
   generate: {
     title: "智能任务生成",
-    subtitle: "这里只处理本次智能任务生成，不混入历史批次和正式任务。",
+    subtitle: "选定分类与执行器，由 Agent 为该分类拟定一批文章写作计划。",
   },
   "history-categories": {
     title: "智能任务列表",
-    subtitle: "先看分类卡片，再进入分类下的批次卡片，最后进入该批次对应的任务列表。",
+    subtitle: "按分类查看历史生成的草稿批次，逐层进入批次与任务项。",
   },
   "history-batches": {
     title: "分类批次",
-    subtitle: "当前页只展示某个分类下的批次卡片，详情、编辑和日志都通过按钮进入独立层。",
+    subtitle: "当前分类下的所有草稿批次，详情、编辑与日志从卡片进入。",
   },
   "history-tasks": {
     title: "批次任务列表",
-    subtitle: "这里只展示当前批次的任务列表字段，详情和编辑动作在独立页处理。",
+    subtitle: "勾选任务项批量加入任务列表，或逐条编辑后单独加入。",
   },
   "batch-detail": {
     title: "批次详情",
-    subtitle: "独立详情页只查看当前批次摘要和日志入口，不和编辑表单混排。",
+    subtitle: "查看当前批次的摘要信息与生成日志。",
   },
   "batch-edit": {
     title: "编辑批次",
-    subtitle: "独立编辑页处理当前批次的标题、摘要、顺序、排期和确认操作。",
+    subtitle: "调整任务项的标题、摘要、顺序与排期，完成后确认进入任务列表。",
   },
   "queue-categories": {
     title: "任务列表",
-    subtitle: "先按分类卡片进入，再查看该分类下的正式任务列表。",
-  },
-  "queue-tasks": {
-    title: "分类任务列表",
-    subtitle: "列表页只展示任务字段，详情、编辑、删除和日志都通过按钮进入。",
+    subtitle: "全部正式任务按「执行中 → 待执行 → 已失败 → 已完成」和执行时间排序，可按分类与状态筛选。",
   },
   "task-detail": {
     title: "任务详情",
-    subtitle: "独立详情页只看当前任务的来源、排期、状态和最近执行结果。",
+    subtitle: "查看任务的来源、排期、执行状态与文章发布结果。",
   },
   "task-edit": {
     title: "编辑任务",
-    subtitle: "独立编辑页处理标题、日期、知识点和执行动作。",
+    subtitle: "修改标题、执行日期与知识点，或立即执行当前任务。",
   },
   settings: {
     title: "配置中心",
-    subtitle: "仓库路径、默认计划池、执行器配置统一放在这里。",
+    subtitle: "仓库与发布、自动化策略、分类与执行器，按标签页分区管理。",
   },
 };
+
+const SETTINGS_TABS = [
+  { id: "repository", label: "仓库与发布" },
+  { id: "categories", label: "分类管理" },
+  { id: "executors", label: "执行器" },
+  { id: "automation", label: "自动化" },
+];
 
 const initialRepository = {
   path: "E:\\idea_space\\blog",
@@ -73,13 +76,21 @@ const initialDraftForm = {
 const initialCategoryForm = {
   name: "",
   enabled: true,
-  isDefaultPool: false,
+  isDefaultPool: true,
 };
 
-const taskStatusTabs = [
+const taskFilterTabs = [
+  { id: "all", label: "全部" },
+  { id: "queued", label: "已入队" },
   { id: "pending", label: "待执行" },
-  { id: "completed", label: "已执行" },
+  { id: "running", label: "执行中" },
+  { id: "done", label: "已完成" },
+  { id: "failed", label: "已失败" },
 ];
+
+const TASK_PAGE_SIZE = 9;
+
+const TASK_STATUS_ORDER = { running: 0, queued: 1, pending: 2, failed: 3, done: 4 };
 
 function rootKeyForScreen(screen) {
   if (screen.startsWith("history")) return "history-categories";
@@ -90,7 +101,7 @@ function rootKeyForScreen(screen) {
 }
 
 function statusTone(status) {
-  if (status === "running" || status === "ready" || status === "pending") return "accent";
+  if (status === "running" || status === "ready" || status === "pending" || status === "queued") return "accent";
   if (status === "done" || status === "success" || status === "confirmed") return "success";
   if (status === "failed") return "danger";
   return "default";
@@ -100,6 +111,7 @@ function statusText(status) {
   const map = {
     draft: "草稿",
     running: "执行中",
+    queued: "已入队",
     ready: "待确认",
     confirmed: "已确认",
     pending: "待执行",
@@ -121,74 +133,82 @@ function categorySourceText(source) {
   return source || "未知来源";
 }
 
-function formatDate(dateText) {
+function toDateValue(dateText) {
   if (!dateText) {
-    return "未排期";
+    return null;
   }
 
-  const date = new Date(`${dateText}T00:00:00`);
-  if (Number.isNaN(date.getTime())) {
-    return dateText;
+  let text = String(dateText);
+  // SQLite CURRENT_TIMESTAMP 写入的是 UTC 时间但不带时区标记，补上 Z 再解析
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(text)) {
+    text = `${text.replace(" ", "T")}Z`;
   }
 
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-  }).format(date);
+  const date = new Date(text);
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
-function formatDateTime(dateText) {
-  if (!dateText) {
-    return "暂无时间";
-  }
-
-  const date = new Date(dateText);
-  if (Number.isNaN(date.getTime())) {
-    return dateText;
+// 系统时间戳（created/updated/started 等）：完整年月日时分秒，上海时区
+function formatTimestamp(dateText) {
+  const date = toDateValue(dateText);
+  if (!date) {
+    return dateText || "暂无时间";
   }
 
   return new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(date);
-}
-
-function formatFullDate(dateText) {
-  if (!dateText) {
-    return "暂无时间";
-  }
-
-  const date = new Date(dateText);
-  if (Number.isNaN(date.getTime())) {
-    return dateText;
-  }
-
-  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
-  }).format(date);
+    second: "2-digit",
+    hour12: false,
+  })
+    .format(date)
+    .replaceAll("/", "-");
 }
 
-function LogoMark() {
-  return (
-    <svg viewBox="0 0 40 40" aria-hidden="true">
-      <rect x="6" y="6" width="28" height="28" rx="10" fill="currentColor" opacity="0.12" />
-      <path
-        d="M13 13.5h12a2.5 2.5 0 0 1 2.5 2.5v10H17a3 3 0 0 0-3 3zM17 13.5V28"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2.2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
+// 排期时间：用户输入的本地时间，原样展示（不做时区换算）
+function formatSchedule(value) {
+  if (!value) {
+    return "未排期";
+  }
+
+  const text = String(value);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+    return text;
+  }
+
+  return text.replace("T", " ");
 }
+
+// datetime-local 输入框要求 YYYY-MM-DDTHH:mm(:ss) 格式，纯日期补 T00:00:00
+function toDatetimeLocalValue(value) {
+  if (!value) {
+    return "";
+  }
+
+  const text = String(value);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+    return `${text}T00:00:00`;
+  }
+
+  return text;
+}
+
+function cloneTask(task) {
+  if (!task) {
+    return null;
+  }
+
+  return {
+    ...task,
+    items: task.items.map((item) => ({ ...item })),
+  };
+}
+
+/* --------------------------------- 图标 ---------------------------------- */
 
 function NavIcon({ id }) {
   const map = {
@@ -213,6 +233,135 @@ function NavIcon({ id }) {
   );
 }
 
+function Icon({ d, className = "h-4 w-4", strokeWidth = 1.8, children }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={strokeWidth}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {d ? <path d={d} /> : null}
+      {children}
+    </svg>
+  );
+}
+
+function IconBot({ className = "h-5 w-5" }) {
+  return (
+    <Icon className={className}>
+      <rect x="6" y="8" width="12" height="10" rx="3" />
+      <path d="M12 4v4M9 13h.01M15 13h.01M9.5 16h5" />
+    </Icon>
+  );
+}
+
+function IconSend() {
+  return <Icon className="h-4 w-4" d="M4 12 20 4 14 20l-2.5-5.5L4 12Z" />;
+}
+
+function IconRefresh({ className = "h-4 w-4" }) {
+  return <Icon className={className} d="M20 12a8 8 0 1 1-2.34-5.66L20 9M20 4v5h-5" />;
+}
+
+function IconFolder({ className = "h-4 w-4" }) {
+  return (
+    <Icon
+      className={className}
+      d="M2 6a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6Z"
+    />
+  );
+}
+
+function IconArrowRight() {
+  return <Icon className="h-4 w-4" strokeWidth={2} d="M5 12h14M12 5l7 7-7 7" />;
+}
+
+function IconCalendar() {
+  return (
+    <Icon className="h-3.5 w-3.5">
+      <rect x="3" y="4" width="18" height="18" rx="2" />
+      <path d="M3 10h18M8 2v4M16 2v4" />
+    </Icon>
+  );
+}
+
+function IconFileText({ className = "h-4 w-4" }) {
+  return (
+    <Icon className={className}>
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" />
+      <path d="M14 2v6h6M16 13H8M16 17H8M10 9H8" />
+    </Icon>
+  );
+}
+
+function IconClock() {
+  return (
+    <Icon className="h-3.5 w-3.5">
+      <circle cx="12" cy="12" r="10" />
+      <polyline points="12 6 12 12 16 14" />
+    </Icon>
+  );
+}
+
+function IconPlusCircle() {
+  return (
+    <Icon className="h-4 w-4" strokeWidth={2}>
+      <circle cx="12" cy="12" r="10" />
+      <path d="M12 8v8M8 12h8" />
+    </Icon>
+  );
+}
+
+function IconEye() {
+  return (
+    <Icon className="h-4 w-4" strokeWidth={2}>
+      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8Z" />
+      <circle cx="12" cy="12" r="3" />
+    </Icon>
+  );
+}
+
+function IconLog() {
+  return (
+    <Icon className="h-4 w-4" strokeWidth={2}>
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" />
+      <polyline points="14 2 14 8 20 8" />
+      <line x1="16" y1="13" x2="8" y2="13" />
+      <line x1="16" y1="17" x2="8" y2="17" />
+    </Icon>
+  );
+}
+
+function IconTrash() {
+  return (
+    <Icon className="h-4 w-4" strokeWidth={2}>
+      <polyline points="3 6 5 6 21 6" />
+      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+    </Icon>
+  );
+}
+
+function IconPen() {
+  return (
+    <Icon
+      className="h-4 w-4"
+      strokeWidth={2}
+      d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5Z"
+    />
+  );
+}
+
+function IconCheck() {
+  return <Icon className="h-3 w-3" strokeWidth={3} d="M20 6 9 17l-5-5" />;
+}
+
+/* -------------------------------- UI 组件 -------------------------------- */
+
 function StatusPill({ tone = "default", children }) {
   return <span className={`status-pill status-pill-${tone}`}>{children}</span>;
 }
@@ -236,11 +385,12 @@ function ToolbarButton({ children, primary = false, danger = false, onClick, dis
   );
 }
 
-function ActionIcon({ children, onClick, danger = false, disabled = false }) {
+function ActionIcon({ children, onClick, tone = "", disabled = false, title }) {
   return (
     <button
       type="button"
-      className={["action-icon", danger ? "action-icon-danger" : ""].filter(Boolean).join(" ")}
+      title={title}
+      className={["action-icon", tone ? `action-icon-${tone}` : ""].filter(Boolean).join(" ")}
       onClick={onClick}
       disabled={disabled}
     >
@@ -249,14 +399,28 @@ function ActionIcon({ children, onClick, danger = false, disabled = false }) {
   );
 }
 
-function Modal({ visible, title, subtitle, onClose, children }) {
+function EmptyState({ icon, title, hint, minHeight }) {
+  return (
+    <div className="empty-state" style={minHeight ? { minHeight } : undefined}>
+      <div className="card-glyph">{icon}</div>
+      <strong>{title}</strong>
+      <p>{hint}</p>
+    </div>
+  );
+}
+
+function Modal({ visible, title, subtitle, onClose, children, wide = false }) {
   if (!visible) {
     return null;
   }
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+      <div
+        className="modal-card"
+        style={wide ? { width: "min(880px, 100%)" } : undefined}
+        onClick={(event) => event.stopPropagation()}
+      >
         <div className="modal-head">
           <div>
             <h3>{title}</h3>
@@ -266,7 +430,7 @@ function Modal({ visible, title, subtitle, onClose, children }) {
             ×
           </button>
         </div>
-        <div className="modal-body">{children}</div>
+        <div>{children}</div>
       </div>
     </div>
   );
@@ -279,166 +443,35 @@ function ConfirmModal({ visible, title, message, onConfirm, onCancel, loading = 
 
   return (
     <div className="modal-overlay" onClick={onCancel}>
-      <div className="modal-card max-w-sm" onClick={(event) => event.stopPropagation()}>
+      <div
+        className="modal-card"
+        style={{ width: "min(440px, 100%)" }}
+        onClick={(event) => event.stopPropagation()}
+      >
         <div className="modal-head">
           <div>
             <h3>{title || "确认操作"}</h3>
             <p>{message}</p>
           </div>
         </div>
-        <div className="flex justify-end gap-3 pt-2">
-          <button
-            type="button"
-            onClick={onCancel}
-            disabled={loading}
-            className="rounded-xl border border-slate-200 bg-white px-5 py-2.5 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed"
-          >
+        <div className="flex justify-end gap-2 pt-1">
+          <ToolbarButton onClick={onCancel} disabled={loading}>
             取消
-          </button>
-          <button
-            type="button"
-            onClick={onConfirm}
-            disabled={loading}
-            className="rounded-xl bg-red-600 px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-70"
-          >
+          </ToolbarButton>
+          <ToolbarButton danger onClick={onConfirm} disabled={loading}>
             {loading ? "处理中..." : "确认"}
-          </button>
+          </ToolbarButton>
         </div>
       </div>
     </div>
   );
 }
 
-function FilterBar({ label, items, activeId, onChange }) {
-  return (
-    <div className="filter-bar">
-      <span>{label}</span>
-      <div className="filter-pills">
-        {items.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            className={`filter-pill ${activeId === item.id ? "active" : ""}`}
-            onClick={() => onChange(item.id)}
-          >
-            {item.name}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function SummaryCard({ title, meta, desc, latest, status, actions }) {
-  return (
-    <article className="summary-card">
-      <div className="summary-card-head">
-        <div>
-          <h4>{title}</h4>
-          <p>{meta}</p>
-        </div>
-        <span className="star-mark">★</span>
-      </div>
-      <p className="summary-desc">{desc}</p>
-      <div className="summary-inline">{latest}</div>
-      <div className="summary-card-foot">
-        <StatusPill tone={statusTone(status)}>{status}</StatusPill>
-        <div className="card-actions">{actions}</div>
-      </div>
-    </article>
-  );
-}
-
-function cloneTask(task) {
-  if (!task) {
-    return null;
-  }
-
-  return {
-    ...task,
-    items: task.items.map((item) => ({ ...item })),
-  };
-}
-
-function IconBot() {
-  return (
-    <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8">
-      <rect x="6" y="8" width="12" height="10" rx="3" />
-      <path d="M12 4v4M9 13h.01M15 13h.01M9.5 16h5" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function IconSend() {
-  return (
-    <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8">
-      <path d="M4 12 20 4 14 20l-2.5-5.5L4 12Z" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function IconRefresh() {
-  return (
-    <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8">
-      <path d="M20 12a8 8 0 1 1-2.34-5.66L20 9M20 4v5h-5" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function IconFolder() {
-  return (
-    <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8">
-      <path d="M2 6a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6Z" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function IconArrowRight() {
-  return (
-    <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
-      <path d="M5 12h14M12 5l7 7-7 7" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function IconCalendar() {
-  return (
-    <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
-      <rect x="3" y="4" width="18" height="18" rx="2" />
-      <path d="M3 10h18M8 2v4M16 2v4" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function IconFileText() {
-  return (
-    <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
-      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M14 2v6h6M16 13H8M16 17H8M10 9H8" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function IconClock() {
-  return (
-    <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
-      <circle cx="12" cy="12" r="10" />
-      <polyline points="12 6 12 12 16 14" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function IconPlusCircle() {
-  return (
-    <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
-      <circle cx="12" cy="12" r="10" />
-      <path d="M12 8v8M8 12h8" strokeLinecap="round" />
-    </svg>
-  );
-}
+/* --------------------------------- 应用 ---------------------------------- */
 
 export function App() {
-  const [screen, setScreen] = useState("queue-categories");
+  const [screen, setScreen] = useState("settings");
+  const [settingsTab, setSettingsTab] = useState("repository");
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [messageTone, setMessageTone] = useState("default");
@@ -448,24 +481,42 @@ export function App() {
   const [tasks, setTasks] = useState([]);
   const [runs, setRuns] = useState([]);
   const [executors, setExecutors] = useState([]);
-  const [defaultPlan, setDefaultPlan] = useState({ enabled: true, defaultExecutorId: "codex-default", autoScheduleEnabled: false });
+  const [defaultPlan, setDefaultPlan] = useState({
+    enabled: true,
+    defaultExecutorId: "codex-default",
+    autoScheduleEnabled: false,
+  });
   const [categoryForm, setCategoryForm] = useState(initialCategoryForm);
   const [draftForm, setDraftForm] = useState(initialDraftForm);
   const [generatedDraftId, setGeneratedDraftId] = useState(null);
   const [generatedItems, setGeneratedItems] = useState([]);
   const [historyCategory, setHistoryCategory] = useState("");
   const [queueCategory, setQueueCategory] = useState("");
-  const [queueStatus, setQueueStatus] = useState("pending");
+  const [queueStatus, setQueueStatus] = useState("all");
+  const [taskPage, setTaskPage] = useState(1);
   const [currentBatchId, setCurrentBatchId] = useState(null);
   const [currentBatchItems, setCurrentBatchItems] = useState([]);
   const [currentTaskId, setCurrentTaskId] = useState(null);
   const [taskEditor, setTaskEditor] = useState(null);
   const [editItem, setEditItem] = useState(null);
   const [selectedItems, setSelectedItems] = useState(new Set());
-  const [executorTest, setExecutorTest] = useState({
-    executorId: "codex-default",
-    promptContent: "你好，请用一句中文确认你已经成功接收到这条测试命令。",
-    result: null,
+  const [picker, setPicker] = useState({
+    visible: false,
+    title: "",
+    mode: "dir",
+    loading: false,
+    path: "",
+    parent: null,
+    directories: [],
+    files: [],
+    manual: "",
+    onPick: null,
+  });
+  const [discover, setDiscover] = useState({
+    visible: false,
+    loading: false,
+    items: [],
+    executorId: null,
   });
   const [confirmModal, setConfirmModal] = useState({
     visible: false,
@@ -540,18 +591,51 @@ export function App() {
           : enabledCategories[0]?.name || categoriesPayload[0]?.name || "",
       executorId: current.executorId || defaultExecutorId,
     }));
-
-    setExecutorTest((current) => ({
-      ...current,
-      executorId: executorsPayload.some((executor) => executor.id === current.executorId)
-        ? current.executorId
-        : defaultExecutorId,
-    }));
   }
 
   useEffect(() => {
     void runAction("", fetchCoreData);
   }, []);
+
+  useEffect(() => {
+    if (!message || messageTone !== "success") {
+      return undefined;
+    }
+
+    const timer = setTimeout(() => setMessage(""), 4000);
+    return () => clearTimeout(timer);
+  }, [message, messageTone]);
+
+  const hasRunningWork = useMemo(
+    () =>
+      tasks.some((task) => task.status === "running" || task.status === "queued") ||
+      drafts.some((draft) => draft.status === "running"),
+    [tasks, drafts],
+  );
+
+  // 有任务/草稿在后台执行时，每 5 秒静默刷新状态（不触发全局 loading）
+  useEffect(() => {
+    if (!hasRunningWork) {
+      return undefined;
+    }
+
+    const timer = setInterval(async () => {
+      try {
+        const [tasksPayload, runsPayload, draftsPayload] = await Promise.all([
+          api.listTasks(),
+          api.listRuns(),
+          api.listDrafts(),
+        ]);
+        setTasks(tasksPayload);
+        setRuns(runsPayload);
+        setDrafts(draftsPayload);
+      } catch {
+        // 轮询失败静默忽略，下一轮重试
+      }
+    }, 5000);
+
+    return () => clearInterval(timer);
+  }, [hasRunningWork]);
 
   const historyCategoryCards = useMemo(() => {
     const groups = new Map();
@@ -578,28 +662,22 @@ export function App() {
     return Array.from(groups.values()).sort((left, right) => left.name.localeCompare(right.name, "zh-CN"));
   }, [drafts]);
 
-  const queueCategoryCards = useMemo(() => {
-    const groups = new Map();
-    tasks.forEach((task) => {
-      const current = groups.get(task.categoryName) || {
-        id: task.categoryName,
-        name: task.categoryName,
-        pendingCount: 0,
-        completedCount: 0,
-        defaultCount: 0,
-      };
-      if (task.status === "pending" || task.status === "running") {
-        current.pendingCount += 1;
-      } else {
-        current.completedCount += 1;
-      }
-      if (task.taskType === "default_random") {
-        current.defaultCount += 1;
-      }
-      groups.set(task.categoryName, current);
-    });
+  const taskCategoryOptions = useMemo(
+    () =>
+      Array.from(new Set(tasks.map((task) => task.categoryName))).sort((left, right) =>
+        left.localeCompare(right, "zh-CN"),
+      ),
+    [tasks],
+  );
 
-    return Array.from(groups.values()).sort((left, right) => left.name.localeCompare(right.name, "zh-CN"));
+  const taskStatusCounts = useMemo(() => {
+    const counts = { queued: 0, pending: 0, running: 0, done: 0, failed: 0 };
+    tasks.forEach((task) => {
+      if (counts[task.status] !== undefined) {
+        counts[task.status] += 1;
+      }
+    });
+    return counts;
   }, [tasks]);
 
   const enabledCategories = useMemo(
@@ -628,14 +706,10 @@ export function App() {
   }, [historyCategoryCards, historyCategory]);
 
   useEffect(() => {
-    if (!queueCategoryCards.length) {
+    if (queueCategory && !taskCategoryOptions.includes(queueCategory)) {
       setQueueCategory("");
-      return;
     }
-    if (!queueCategoryCards.some((item) => item.id === queueCategory)) {
-      setQueueCategory(queueCategoryCards[0].id);
-    }
-  }, [queueCategoryCards, queueCategory]);
+  }, [taskCategoryOptions, queueCategory]);
 
   const batchCards = useMemo(
     () =>
@@ -675,16 +749,42 @@ export function App() {
   );
 
   const queueTasks = useMemo(() => {
-    const filterFn =
-      queueStatus === "pending"
-        ? (task) => task.status === "pending" || task.status === "running"
-        : (task) => task.status === "done" || task.status === "failed";
-
     return tasks
-      .filter((task) => task.categoryName === queueCategory)
-      .filter(filterFn)
-      .sort((left, right) => (left.scheduledDate || "9999-12-31").localeCompare(right.scheduledDate || "9999-12-31"));
+      .filter((task) => !queueCategory || task.categoryName === queueCategory)
+      .filter((task) => queueStatus === "all" || task.status === queueStatus)
+      .sort((left, right) => {
+        const statusDiff =
+          (TASK_STATUS_ORDER[left.status] ?? 9) - (TASK_STATUS_ORDER[right.status] ?? 9);
+        if (statusDiff !== 0) {
+          return statusDiff;
+        }
+        // 执行中/已入队/待执行按执行时间升序（越早越靠前），已完成/已失败按更新时间倒序
+        if (left.status === "pending" || left.status === "running" || left.status === "queued") {
+          return (
+            (left.scheduledDate || "9999-12-31").localeCompare(right.scheduledDate || "9999-12-31") ||
+            left.id - right.id
+          );
+        }
+        return (right.updatedAt || "").localeCompare(left.updatedAt || "") || right.id - left.id;
+      });
   }, [queueCategory, queueStatus, tasks]);
+
+  const totalTaskPages = Math.max(1, Math.ceil(queueTasks.length / TASK_PAGE_SIZE));
+
+  const pagedTasks = useMemo(
+    () => queueTasks.slice((taskPage - 1) * TASK_PAGE_SIZE, taskPage * TASK_PAGE_SIZE),
+    [queueTasks, taskPage],
+  );
+
+  useEffect(() => {
+    setTaskPage(1);
+  }, [queueCategory, queueStatus]);
+
+  useEffect(() => {
+    if (taskPage > totalTaskPages) {
+      setTaskPage(totalTaskPages);
+    }
+  }, [taskPage, totalTaskPages]);
 
   useEffect(() => {
     if (!queueTasks.length) {
@@ -710,10 +810,14 @@ export function App() {
     [drafts, generatedDraftId],
   );
 
-  const latestDraftRun = useMemo(
-    () => runs.find((run) => run.draftId === currentBatchId) || null,
-    [runs, currentBatchId],
-  );
+  // 后台生成完成（轮询到 ready）后自动加载生成结果
+  useEffect(() => {
+    if (!generatedDraftId || generatedDraft?.status !== "ready" || generatedItems.length > 0) {
+      return;
+    }
+
+    void api.getDraftItems(generatedDraftId).then(setGeneratedItems).catch(() => {});
+  }, [generatedDraft, generatedDraftId, generatedItems.length]);
 
   const latestTaskRun = useMemo(
     () => runs.find((run) => run.taskId === currentTaskId) || null,
@@ -752,7 +856,7 @@ export function App() {
   }
 
   async function handleGenerateDraft() {
-    const payload = await runAction("智能任务已生成。", async () => {
+    const payload = await runAction("生成任务已提交，Agent 正在后台拟定计划。", async () => {
       const response = await api.generateDraft(draftForm);
       await fetchCoreData();
       return response;
@@ -760,7 +864,7 @@ export function App() {
 
     if (payload) {
       setGeneratedDraftId(payload.draftId);
-      setGeneratedItems(payload.items);
+      setGeneratedItems([]);
       setHistoryCategory(draftForm.categoryName);
       setCurrentBatchId(payload.draftId);
     }
@@ -803,7 +907,7 @@ export function App() {
       setQueueCategory(draft.categoryName);
       setQueueStatus("pending");
       setCurrentTaskId(payload.createdTaskIds?.[0] || null);
-      setScreen("queue-tasks");
+      setScreen("queue-categories");
     }
   }
 
@@ -907,7 +1011,7 @@ export function App() {
       return;
     }
 
-    const result = await runAction("任务已提交执行。", async () => {
+    const result = await runAction("任务已加入执行队列，将按顺序自动执行。", async () => {
       const response = await api.runTask(taskId, { executorId });
       await fetchCoreData();
       return response;
@@ -919,8 +1023,25 @@ export function App() {
     }
   }
 
+  async function handleDequeueTask(taskId) {
+    await runAction("任务已取消排队，回到待执行状态。", async () => {
+      await api.dequeueTask(taskId);
+      await fetchCoreData();
+    });
+  }
+
+  async function handlePushTask(taskId) {
+    await runAction("推送成功，文章将由 GitHub Pages 自动发布。", async () => {
+      await api.pushTask(taskId);
+      await fetchCoreData();
+    });
+  }
+
   async function handleCreateDefaultTask() {
     const payload = await runAction("系统默认任务已同步。", async () => {
+      // 先把界面上的自动化配置同步到服务端，避免开关未保存导致创建被拒绝
+      const saved = await api.saveDefaultPlan(defaultPlan);
+      setDefaultPlan(saved.settings || saved);
       const response = await api.createDefaultTask();
       await fetchCoreData();
       return response;
@@ -928,8 +1049,9 @@ export function App() {
 
     if (payload) {
       setQueueCategory(payload.categoryName);
+      setQueueStatus("pending");
       setCurrentTaskId(payload.id);
-      setScreen("queue-tasks");
+      setScreen("queue-categories");
     }
   }
 
@@ -954,7 +1076,7 @@ export function App() {
   }
 
   async function handleSaveDefaultPlan() {
-    await runAction("默认计划已保存。", async () => {
+    await runAction("默认任务配置已保存。", async () => {
       const payload = await api.saveDefaultPlan(defaultPlan);
       setDefaultPlan(payload.settings || payload);
       await fetchCoreData();
@@ -1011,304 +1133,382 @@ export function App() {
   }
 
   async function handleSaveExecutor(executor) {
-    let argsTemplate = executor.argsTemplate;
-    if (typeof executor.argsTemplateText === "string") {
-      try {
-        argsTemplate = JSON.parse(executor.argsTemplateText);
-      } catch {
-        setMessage("参数模板必须是合法的 JSON 数组，例如 [\"-p\", \"{promptContent}\"]。");
-        setMessageTone("danger");
-        return;
-      }
-    }
-
     await runAction(`${executor.name} 已保存。`, async () => {
       await api.updateExecutor(executor.id, {
         name: executor.name,
         command: executor.command,
         workingDirectory: executor.workingDirectory,
         timeoutMs: Number(executor.timeoutMs),
-        argsTemplate,
         enabled: executor.enabled,
       });
       await fetchCoreData();
     });
   }
 
-  async function handleTestExecutor() {
-    const payload = await runAction("执行器测试完成。", async () =>
-      api.testExecutor(executorTest.executorId, {
-        promptContent: executorTest.promptContent,
-      }),
-    );
+  async function handleTestExecutorRow(executor) {
+    const payload = await runAction("", async () => api.testExecutor(executor.id, {}));
 
     if (payload) {
-      setExecutorTest((current) => ({ ...current, result: payload }));
+      setMessage(payload.success ? `${executor.name} 测试成功。` : `${executor.name} 测试失败，请检查命令配置。`);
+      setMessageTone(payload.success ? "success" : "danger");
+      openLogModal(
+        `执行器测试 / ${executor.name}`,
+        payload.success ? "测试成功，以下是本次执行输出。" : "测试失败，以下是本次执行输出。",
+        buildRunLogLines({
+          promptText: payload.promptText,
+          stdoutText: payload.stdoutText,
+          stderrText: payload.stderrText,
+        }),
+      );
     }
   }
 
+  async function loadPickerPath(targetPath, mode) {
+    setPicker((current) => ({ ...current, loading: true }));
+    try {
+      const data = await api.browsePath(targetPath, mode === "file");
+      setPicker((current) => ({
+        ...current,
+        loading: false,
+        path: data.path,
+        parent: data.parent,
+        directories: data.directories || [],
+        files: data.files || [],
+        manual: data.path,
+      }));
+    } catch (error) {
+      setPicker((current) => ({ ...current, loading: false }));
+      setMessage(error.message);
+      setMessageTone("danger");
+    }
+  }
+
+  function openPicker({ title, mode = "dir", initialPath = "", onPick }) {
+    setPicker({
+      visible: true,
+      title,
+      mode,
+      loading: true,
+      path: "",
+      parent: null,
+      directories: [],
+      files: [],
+      manual: "",
+      onPick,
+    });
+    void loadPickerPath(initialPath, mode);
+  }
+
+  function closePicker() {
+    setPicker((current) => ({ ...current, visible: false, onPick: null }));
+  }
+
+  function pickPath(value) {
+    const trimmed = String(value || "").trim();
+    if (!trimmed) {
+      return;
+    }
+    picker.onPick?.(trimmed);
+    closePicker();
+  }
+
+  async function openDiscover(executorId) {
+    setDiscover({ visible: true, loading: true, items: [], executorId });
+    try {
+      const items = await api.discoverExecutors();
+      setDiscover((current) => ({ ...current, loading: false, items }));
+    } catch (error) {
+      setDiscover((current) => ({ ...current, loading: false }));
+      setMessage(error.message);
+      setMessageTone("danger");
+    }
+  }
+
+  function commandParentDirectory(command) {
+    const text = String(command || "");
+    const index = Math.max(text.lastIndexOf("\\"), text.lastIndexOf("/"));
+    return index > 0 ? text.slice(0, index) : "";
+  }
+
+  /* ------------------------------ 智能任务生成 ------------------------------ */
+
   function renderGenerate() {
     return (
-      <div className="grid grid-cols-1 gap-7 xl:grid-cols-[minmax(360px,472px),minmax(0,1fr)]">
-        <section className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-[0_16px_36px_rgba(15,23,42,0.06)]">
-          <div className="mb-6 flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
+      <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(360px,440px),minmax(0,1fr)] items-start">
+        <section className="surface-panel">
+          <div className="panel-head">
+            <div className="flex items-center gap-3">
+              <div className="card-glyph">
+                <IconBot />
+              </div>
+              <div>
+                <h3>拟定写作计划</h3>
+                <p>Agent 只生成任务计划，不直接写文章。</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid gap-4">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <label className="field-block">
+                <span>分类</span>
+                <select
+                  value={draftForm.categoryName}
+                  onChange={(event) => setDraftForm((current) => ({ ...current, categoryName: event.target.value }))}
+                  disabled={enabledCategories.length === 0}
+                >
+                  {enabledCategories.length === 0 ? (
+                    <option value="">请先在配置中心创建或启用分类</option>
+                  ) : null}
+                  {enabledCategories.map((category) => (
+                    <option key={category.id} value={category.name}>
+                      {category.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="field-block">
+                <span>执行器</span>
+                <select
+                  value={draftForm.executorId}
+                  onChange={(event) => setDraftForm((current) => ({ ...current, executorId: event.target.value }))}
+                >
+                  {executors.map((executor) => (
+                    <option key={executor.id} value={executor.id}>
+                      {executor.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            <label className="field-block">
+              <span>任务数量</span>
+              <input
+                type="number"
+                min="1"
+                max="30"
+                value={draftForm.itemCount}
+                onChange={(event) => setDraftForm((current) => ({ ...current, itemCount: Number(event.target.value) }))}
+              />
+            </label>
+
+            <label className="field-block">
+              <span>生成目标</span>
+              <textarea
+                rows="5"
+                value={draftForm.goal}
+                onChange={(event) => setDraftForm((current) => ({ ...current, goal: event.target.value }))}
+                placeholder="描述希望这次生成的任务主题、边界或计划目标..."
+              />
+            </label>
+          </div>
+
+          <div className="panel-foot">
+            <button
+              type="button"
+              onClick={handleGenerateDraft}
+              disabled={loading || enabledCategories.length === 0 || generatedDraft?.status === "running"}
+              className="toolbar-btn toolbar-btn-primary flex w-full items-center justify-center gap-2 !py-3"
+            >
+              {loading || generatedDraft?.status === "running" ? (
+                <span className="spin inline-flex">
+                  <IconRefresh />
+                </span>
+              ) : (
+                <IconSend />
+              )}
+              <span>
+                {generatedDraft?.status === "running" ? "后台生成中..." : loading ? "提交中..." : "生成智能任务"}
+              </span>
+            </button>
+          </div>
+        </section>
+
+        {generatedDraft && generatedDraft.status === "running" ? (
+          <EmptyState
+            icon={
+              <span className="spin inline-flex">
+                <IconRefresh />
+              </span>
+            }
+            title="Agent 正在拟定写作计划..."
+            hint="通常需要 1-3 分钟，完成后结果会自动展示在这里，可离开此页面。"
+            minHeight={420}
+          />
+        ) : generatedDraft && generatedDraft.status === "failed" && generatedItems.length === 0 ? (
+          <div className="empty-state" style={{ minHeight: 420 }}>
+            <div className="card-glyph">
               <IconBot />
             </div>
-            <div>
-              <h3 className="text-[18px] font-semibold tracking-[-0.02em] text-slate-900">生成智能任务</h3>
-            </div>
-          </div>
-
-          <div className="space-y-4">
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <label className="block">
-                  <span className="mb-1.5 block text-sm font-medium text-slate-700">分类名称</span>
-                  <select
-                    value={draftForm.categoryName}
-                    onChange={(event) => setDraftForm((current) => ({ ...current, categoryName: event.target.value }))}
-                    disabled={enabledCategories.length === 0}
-                    className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 outline-none transition-all duration-200 hover:border-blue-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
-                  >
-                    {enabledCategories.length === 0 ? (
-                      <option value="">请先在配置中心创建或启用分类</option>
-                    ) : null}
-                    {enabledCategories.map((category) => (
-                      <option key={category.id} value={category.name}>
-                        {category.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                <label className="block">
-                  <span className="mb-1.5 block text-sm font-medium text-slate-700">执行器</span>
-                  <select
-                    value={draftForm.executorId}
-                    onChange={(event) => setDraftForm((current) => ({ ...current, executorId: event.target.value }))}
-                    className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 outline-none transition-all duration-200 hover:border-blue-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
-                  >
-                    {executors.map((executor) => (
-                      <option key={executor.id} value={executor.id}>
-                        {executor.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-
-              <label className="block">
-                <span className="mb-1.5 block text-sm font-medium text-slate-700">任务数量</span>
-                <input
-                  type="number"
-                  min="1"
-                  max="30"
-                  value={draftForm.itemCount}
-                  onChange={(event) => setDraftForm((current) => ({ ...current, itemCount: Number(event.target.value) }))}
-                  className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 outline-none transition-all duration-200 hover:border-blue-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
-                />
-              </label>
-
-              <label className="block">
-                <span className="mb-1.5 block text-sm font-medium text-slate-700">生成目标</span>
-                <textarea
-                  rows="5"
-                  value={draftForm.goal}
-                  onChange={(event) => setDraftForm((current) => ({ ...current, goal: event.target.value }))}
-                  placeholder="描述希望这次生成的任务主题、边界或计划目标..."
-                  className="w-full resize-none rounded-xl border border-slate-300 bg-white px-3.5 py-3 text-sm leading-6 text-slate-900 outline-none transition-all duration-200 hover:border-blue-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
-                />
-              </label>
-            </div>
-
-            <div className="mt-6">
-                <button
-                  type="button"
-                  onClick={handleGenerateDraft}
-                  disabled={loading || enabledCategories.length === 0}
-                className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-sm font-medium text-white shadow-[0_14px_30px_rgba(37,99,235,0.22)] transition-all duration-200 hover:scale-[1.01] hover:bg-blue-700 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-70"
+            <strong>生成失败</strong>
+            <p>Agent 没有返回有效的任务计划，可查看日志排查原因后重新生成。</p>
+            <div className="mt-3">
+              <ToolbarButton
+                onClick={() =>
+                  openLogModal(
+                    `草稿日志 / ${generatedDraft.categoryName}`,
+                    generatedDraft.goal || "本次草稿生成日志。",
+                    buildDraftLogLines(generatedDraft),
+                  )
+                }
               >
-                {loading ? <span className="animate-spin"><IconRefresh /></span> : <IconSend />}
-                <span>{loading ? "生成中..." : "生成智能任务"}</span>
-              </button>
+                查看日志
+              </ToolbarButton>
             </div>
-          </section>
-
-          {generatedDraft && generatedItems.length > 0 ? (
-            <section className="rounded-[20px] border border-slate-200 bg-white p-4 shadow-[0_10px_24px_rgba(15,23,42,0.04)] animate-[fadeIn_0.35s_ease]">
-              <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <h4 className="text-sm font-semibold text-slate-900">本次返回列表</h4>
-                  <p className="mt-1 text-xs leading-6 text-slate-500">当前生成结果仅在这里预览与调整。</p>
-                </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        openLogModal(
-                          `草稿日志 / ${generatedDraft.categoryName}`,
-                          generatedDraft.goal || "本次草稿生成日志。",
-                          buildDraftLogLines(generatedDraft),
-                        )
-                      }
-                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700 transition-colors hover:border-blue-300 hover:text-blue-600"
-                    >
-                      查看日志
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void handleConfirmDraft(generatedDraft.id)}
-                      disabled={loading}
-                      className="rounded-xl bg-blue-600 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-70"
-                    >
-                      确认进入任务列表
-                    </button>
-                  </div>
-                </div>
-
-                <div className="space-y-3">
-                  {generatedItems.map((row) => (
-                    <div
-                      key={row.id}
-                      className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4 shadow-[0_8px_24px_rgba(15,23,42,0.04)]"
-                    >
-                      <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
-                        <div className="min-w-0 flex-1">
-                          <strong className="block text-sm font-semibold text-slate-900">{row.title}</strong>
-                          <p className="mt-1 text-sm leading-6 text-slate-500">{row.contentBrief || "暂无摘要"}</p>
-                        </div>
-                        <StatusPill tone="accent">{row.scheduledDate || "未排期"}</StatusPill>
-                      </div>
-
-                      <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr),160px,110px]">
-                        <input
-                          value={row.title}
-                          onChange={(event) => updateGeneratedItem(row.id, "title", event.target.value)}
-                          className="rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 outline-none transition-all duration-200 hover:border-blue-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
-                        />
-                        <input
-                          value={row.scheduledDate || ""}
-                          type="date"
-                          onChange={(event) => updateGeneratedItem(row.id, "scheduledDate", event.target.value)}
-                          className="rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 outline-none transition-all duration-200 hover:border-blue-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => void saveDraftItem(row)}
-                          className="rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm font-medium text-slate-700 transition-colors hover:border-blue-300 hover:text-blue-600"
-                        >
-                          保存
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </section>
-            ) : (
-              <section className="flex min-h-[400px] flex-col items-center justify-center rounded-[24px] border-2 border-dashed border-slate-200 bg-slate-50/80 px-6 text-center">
-                <div className="mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-white text-slate-300 shadow-[0_10px_24px_rgba(15,23,42,0.04)]">
-                  <IconBot />
-                </div>
-                <h4 className="text-[15px] font-semibold text-slate-500">暂无生成结果</h4>
-                <p className="mt-2 max-w-xs text-sm leading-6 text-slate-400">
-                  在左侧选择分类与执行器，填写生成目标后，点击「生成智能任务」按钮即可开始。
-                </p>
-              </section>
-            )}
-        </div>
-      );
-    }
-
-    function renderHistoryCategories() {
-      const pendingTotal = historyCategoryCards.reduce((sum, item) => sum + item.pendingCount, 0);
-
-      return (
-        <div className="page-stack">
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-2 text-sm text-slate-500">
-              <span className="inline-flex h-7 items-center gap-1.5 rounded-full bg-blue-50 px-3 text-xs font-medium text-blue-700">
-                共 {historyCategoryCards.length} 个分类
-              </span>
-              {pendingTotal > 0 && (
-                <span className="inline-flex h-7 items-center gap-1.5 rounded-full bg-amber-50 px-3 text-xs font-medium text-amber-700">
-                  待确认 {pendingTotal}
-                </span>
-              )}
-            </div>
-            <ToolbarButton onClick={() => void handleRefresh()} disabled={loading}>刷新数据</ToolbarButton>
           </div>
-
-          {historyCategoryCards.length > 0 ? (
-            <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-3">
-              {historyCategoryCards.map((item) => (
-                <div
-                  key={item.id}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => {
-                    setHistoryCategory(item.id);
-                    setScreen("history-batches");
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      setHistoryCategory(item.id);
-                      setScreen("history-batches");
-                    }
-                  }}
-                  className="group cursor-pointer rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_4px_20px_rgba(15,23,42,0.04)] transition-all duration-200 hover:-translate-y-0.5 hover:border-blue-200 hover:shadow-[0_12px_32px_rgba(15,23,42,0.08)]"
+        ) : generatedDraft && generatedItems.length > 0 ? (
+          <section className="surface-panel">
+            <div className="panel-head">
+              <div>
+                <h3>本次返回列表</h3>
+                <p>生成结果仅在这里预览与调整，确认后进入任务列表。</p>
+              </div>
+              <div className="panel-actions">
+                <ToolbarButton
+                  onClick={() =>
+                    openLogModal(
+                      `草稿日志 / ${generatedDraft.categoryName}`,
+                      generatedDraft.goal || "本次草稿生成日志。",
+                      buildDraftLogLines(generatedDraft),
+                    )
+                  }
                 >
-                  <div className="mb-4 flex items-start justify-between gap-3">
-                    <div className="flex items-center gap-3">
-                      <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50 text-blue-600 transition-colors group-hover:bg-blue-100">
-                        <IconFolder />
+                  查看日志
+                </ToolbarButton>
+                <ToolbarButton primary onClick={() => void handleConfirmDraft(generatedDraft.id)} disabled={loading}>
+                  确认进入任务列表
+                </ToolbarButton>
+              </div>
+            </div>
+
+            <div className="edit-list stagger">
+              {generatedItems.map((row) => (
+                <div key={row.id} className="edit-item">
+                  <div className="edit-form-fill">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div className="min-w-0 flex-1">
+                        <strong className="block font-semibold">{row.title}</strong>
+                        <p className="mt-1 text-[13px] leading-6" style={{ color: "var(--ink-faint)" }}>
+                          {row.contentBrief || "暂无摘要"}
+                        </p>
                       </div>
-                      <div>
-                        <h4 className="text-[15px] font-semibold text-slate-900 group-hover:text-blue-700 transition-colors">
-                          {item.name}
-                        </h4>
-                      </div>
+                      <StatusPill tone="accent">{formatSchedule(row.scheduledDate)}</StatusPill>
                     </div>
-                    <span className="mt-0.5 flex h-6 w-6 items-center justify-center rounded-lg text-slate-300 transition-colors group-hover:bg-blue-50 group-hover:text-blue-500">
-                      <IconArrowRight />
-                    </span>
-                  </div>
-
-                  <div className="mb-4 flex items-center gap-4 text-sm text-slate-500">
-                    <span className="font-medium text-slate-700">{item.batchCount} 个批次</span>
-                    <span className="text-slate-300">·</span>
-                    <span className="font-medium text-slate-700">{item.itemCount} 条任务</span>
-                  </div>
-
-                  <p className="mb-4 text-xs text-slate-400">
-                    最近更新 {formatDateTime(item.latestDraft?.updatedAt)}
-                  </p>
-
-                  <div className="rounded-xl bg-slate-50 px-4 py-3">
-                    <div className="flex items-center gap-2 text-sm">
-                      <span className={item.pendingCount > 0 ? "text-amber-500" : "text-slate-300"}>●</span>
-                      <span className="font-medium text-slate-700">
-                        待确认批次 {item.pendingCount} 个
-                      </span>
+                    <div className="inline-edit-grid">
+                      <input
+                        value={row.title}
+                        onChange={(event) => updateGeneratedItem(row.id, "title", event.target.value)}
+                      />
+                      <input
+                        value={toDatetimeLocalValue(row.scheduledDate)}
+                        type="datetime-local"
+                        step="1"
+                        onChange={(event) => updateGeneratedItem(row.id, "scheduledDate", event.target.value)}
+                      />
+                      <ToolbarButton onClick={() => void saveDraftItem(row)}>保存</ToolbarButton>
                     </div>
                   </div>
                 </div>
               ))}
             </div>
-          ) : (
-            <div className="flex min-h-[320px] flex-col items-center justify-center rounded-[20px] border-2 border-dashed border-slate-200 bg-slate-50/80 px-6 text-center">
-              <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-white text-slate-300 shadow-[0_10px_24px_rgba(15,23,42,0.04)]">
-                <IconFolder />
-              </div>
-              <p className="text-sm font-medium text-slate-500">暂无分类数据</p>
-              <p className="mt-2 max-w-xs text-sm leading-6 text-slate-400">
-                生成任务后，这里会按分类展示对应的统计卡片。
-              </p>
-            </div>
-          )}
+          </section>
+        ) : (
+          <EmptyState
+            icon={<IconBot />}
+            title="暂无生成结果"
+            hint="在左侧选择分类与执行器，填写生成目标后，点击「生成智能任务」即可开始。"
+            minHeight={420}
+          />
+        )}
+      </div>
+    );
+  }
+
+  /* ---------------------------- 智能任务：分类层 ---------------------------- */
+
+  function renderHistoryCategories() {
+    const pendingTotal = historyCategoryCards.reduce((sum, item) => sum + item.pendingCount, 0);
+
+    return (
+      <div className="page-stack">
+        <div className="sub-toolbar">
+          <div className="panel-actions">
+            <span className="stat-chip">
+              共 <strong>{historyCategoryCards.length}</strong> 个分类
+            </span>
+            {pendingTotal > 0 && (
+              <span className="stat-chip stat-chip-warn">
+                待确认 <strong>{pendingTotal}</strong>
+              </span>
+            )}
+          </div>
         </div>
-      );
-    }
+
+        {historyCategoryCards.length > 0 ? (
+          <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-3 stagger">
+            {historyCategoryCards.map((item) => (
+              <div
+                key={item.id}
+                role="button"
+                tabIndex={0}
+                onClick={() => {
+                  setHistoryCategory(item.id);
+                  setScreen("history-batches");
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    setHistoryCategory(item.id);
+                    setScreen("history-batches");
+                  }
+                }}
+                className="entry-card clickable"
+              >
+                <div className="mb-4 flex items-start justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="card-glyph">
+                      <IconFolder />
+                    </div>
+                    <h4>{item.name}</h4>
+                  </div>
+                  <span className="card-arrow mt-1">
+                    <IconArrowRight />
+                  </span>
+                </div>
+
+                <div className="mb-3 flex items-center gap-5">
+                  <span className="card-stats">
+                    <strong>{item.batchCount}</strong> 个批次
+                  </span>
+                  <span className="card-stats">
+                    <strong>{item.itemCount}</strong> 条任务
+                  </span>
+                </div>
+
+                <p className="card-meta mb-4">最近更新 {formatTimestamp(item.latestDraft?.updatedAt)}</p>
+
+                <div className="card-inset mt-auto">
+                  <span style={{ color: item.pendingCount > 0 ? "var(--amber)" : "var(--ink-faint)" }}>
+                    ● 待确认批次 {item.pendingCount} 个
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <EmptyState
+            icon={<IconFolder />}
+            title="暂无分类数据"
+            hint="生成任务后，这里会按分类展示对应的统计卡片。"
+          />
+        )}
+      </div>
+    );
+  }
+
+  /* ---------------------------- 智能任务：批次层 ---------------------------- */
 
   function renderHistoryBatches() {
     const categoryName = historyCategory || "未分类";
@@ -1317,14 +1517,14 @@ export function App() {
       <div className="page-stack">
         <div className="sub-toolbar">
           <div className="breadcrumb-lite">
-            <button type="button" onClick={() => setScreen("history-categories")}>智能任务列表</button>
+            <button type="button" onClick={() => setScreen("history-categories")}>分类</button>
             <span>/</span>
             <strong>{categoryName}</strong>
           </div>
         </div>
 
         {batchCards.length > 0 ? (
-          <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-3">
+          <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-3 stagger">
             {batchCards.map((item) => (
               <div
                 key={item.id}
@@ -1341,63 +1541,42 @@ export function App() {
                     setScreen("history-tasks");
                   }
                 }}
-                className="group cursor-pointer rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_4px_20px_rgba(15,23,42,0.04)] transition-all duration-200 hover:-translate-y-0.5 hover:border-blue-200 hover:shadow-[0_12px_32px_rgba(15,23,42,0.08)]"
+                className="entry-card clickable"
               >
-                {/* 顶部：日期与星标 */}
-                <div className="mb-3 flex items-center justify-between">
-                  <div className="flex items-center gap-1.5 text-sm font-medium text-slate-500">
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <span className="card-meta inline-flex items-center gap-1.5">
                     <IconCalendar />
-                    {formatFullDate(item.updatedAt)}
-                  </div>
-                  <span className="text-yellow-400 text-lg leading-none">★</span>
-                </div>
-
-                {/* 描述：批次目标，非加粗 */}
-                <p className="mb-5 text-sm leading-relaxed text-slate-600 line-clamp-2">
-                  {item.goal || item.categoryName}
-                </p>
-
-                {/* 中部：草稿数量突出显示 */}
-                <div className="mb-4 flex items-center justify-between">
-                  <div className="inline-flex items-center gap-1.5 rounded-lg bg-blue-50 border border-blue-100 px-3 py-1.5">
-                    <span className="text-blue-500"><IconFileText /></span>
-                    <span className="text-sm text-blue-800">
-                      包含 <span className="font-bold text-base text-blue-600">{item.itemCount || 0}</span> 条草稿任务
-                    </span>
-                  </div>
-                  <span className="text-xs text-slate-400">{item.executorId}</span>
-                </div>
-
-                {/* 底部：状态与快捷操作 */}
-                <div className="flex items-center justify-between border-t border-slate-100 pt-4">
-                  <span
-                    className={`inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-medium ${
-                      item.status === "ready"
-                        ? "bg-amber-50 text-amber-700 border border-amber-200"
-                        : "bg-emerald-50 text-emerald-700 border border-emerald-200"
-                    }`}
-                  >
-                    {statusText(item.status)}
+                    {formatTimestamp(item.updatedAt)}
                   </span>
+                  <StatusPill tone={statusTone(item.status)}>{statusText(item.status)}</StatusPill>
+                </div>
 
-                  <div className="flex gap-1">
-                    <button
-                      type="button"
+                <h4 className="mb-4 line-clamp-2" style={{ fontSize: "15px" }}>
+                  {item.goal || `${item.categoryName} · 常规批次`}
+                </h4>
+
+                <div className="mb-4 flex items-center justify-between gap-3">
+                  <span className="card-stats">
+                    <strong>{item.itemCount || 0}</strong> 条草稿任务
+                  </span>
+                  <span className="card-meta font-mono text-[11px]">{item.executorId}</span>
+                </div>
+
+                <div className="card-foot">
+                  <span className="card-meta">批次 #{item.id}</span>
+                  <div className="card-actions">
+                    <ActionIcon
+                      title="详情"
                       onClick={(event) => {
                         event.stopPropagation();
                         setCurrentBatchId(item.id);
                         setScreen("batch-detail");
                       }}
-                      className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-blue-50 hover:text-blue-600"
-                      title="详情"
                     >
-                      <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
-                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8Z" />
-                        <circle cx="12" cy="12" r="3" />
-                      </svg>
-                    </button>
-                    <button
-                      type="button"
+                      <IconEye />
+                    </ActionIcon>
+                    <ActionIcon
+                      title="日志"
                       onClick={(event) => {
                         event.stopPropagation();
                         openLogModal(
@@ -1406,49 +1585,36 @@ export function App() {
                           buildDraftLogLines(item),
                         );
                       }}
-                      className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-blue-50 hover:text-blue-600"
-                      title="日志"
                     >
-                      <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
-                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" strokeLinecap="round" strokeLinejoin="round" />
-                        <polyline points="14 2 14 8 20 8" strokeLinecap="round" strokeLinejoin="round" />
-                        <line x1="16" y1="13" x2="8" y2="13" strokeLinecap="round" strokeLinejoin="round" />
-                        <line x1="16" y1="17" x2="8" y2="17" strokeLinecap="round" strokeLinejoin="round" />
-                      </svg>
-                    </button>
-                    <button
-                      type="button"
+                      <IconLog />
+                    </ActionIcon>
+                    <ActionIcon
+                      title="删除"
+                      tone="danger"
                       onClick={(event) => {
                         event.stopPropagation();
                         void handleDeleteDraft(item.id);
                       }}
-                      className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-red-50 hover:text-red-500"
-                      title="删除"
                     >
-                      <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
-                        <polyline points="3 6 5 6 21 6" strokeLinecap="round" strokeLinejoin="round" />
-                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" strokeLinecap="round" strokeLinejoin="round" />
-                      </svg>
-                    </button>
+                      <IconTrash />
+                    </ActionIcon>
                   </div>
                 </div>
               </div>
             ))}
           </div>
         ) : (
-          <div className="flex min-h-[320px] flex-col items-center justify-center rounded-[20px] border-2 border-dashed border-slate-200 bg-slate-50/80 px-6 text-center">
-            <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-white text-slate-300 shadow-[0_10px_24px_rgba(15,23,42,0.04)]">
-              <IconFileText />
-            </div>
-            <p className="text-sm font-medium text-slate-500">暂无批次数据</p>
-            <p className="mt-2 max-w-xs text-sm leading-6 text-slate-400">
-              该分类下还没有生成批次，请先在智能任务生成页面创建。
-            </p>
-          </div>
+          <EmptyState
+            icon={<IconFileText />}
+            title="暂无批次数据"
+            hint="该分类下还没有生成批次，请先在智能任务生成页面创建。"
+          />
         )}
       </div>
     );
   }
+
+  /* --------------------------- 智能任务：任务项层 --------------------------- */
 
   function renderHistoryTasks() {
     const categoryName = currentBatch?.categoryName || historyCategory || "未分类";
@@ -1531,7 +1697,7 @@ export function App() {
         </div>
 
         {currentBatchItems.length > 0 ? (
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3 stagger">
             {currentBatchItems.map((item) => {
               const isPushed = item.status === "confirmed" || isConfirmedBatch;
               const isSelected = selectedItems.has(item.id);
@@ -1539,84 +1705,66 @@ export function App() {
               return (
                 <div
                   key={item.id}
-                  className={`group rounded-2xl border bg-white p-5 shadow-[0_4px_20px_rgba(15,23,42,0.04)] transition-all duration-200 hover:border-blue-200 hover:shadow-[0_8px_28px_rgba(15,23,42,0.07)] ${
-                    isPushed ? "border-emerald-200 bg-emerald-50/30" : "border-slate-200"
-                  } ${isSelected ? "border-blue-400 ring-2 ring-blue-500/20" : ""}`}
+                  className={[
+                    "entry-card",
+                    isPushed ? "confirmed-card" : "",
+                    isSelected ? "selectable-selected" : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
                 >
-                  {/* 头部：标题 + 复选框 */}
                   <div className="mb-3 flex items-start gap-3">
                     {!isPushed && (
-                      <label className="mt-0.5 flex-shrink-0">
-                        <input
-                          type="checkbox"
-                          checked={isSelected}
-                          onChange={() => toggleSelect(item.id)}
-                          className="h-4 w-4 cursor-pointer rounded border-slate-300 text-blue-600 accent-blue-600"
-                        />
+                      <label className="mt-1 flex-shrink-0">
+                        <input type="checkbox" checked={isSelected} onChange={() => toggleSelect(item.id)} />
                       </label>
                     )}
-                    <h4 className="flex-1 text-[15px] font-semibold leading-snug text-slate-900">
+                    <h4 className="flex-1" style={{ fontSize: "15px" }}>
                       {item.title}
                       {isPushed && (
-                        <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700">
-                          <svg viewBox="0 0 24 24" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="3">
-                            <polyline points="20 6 9 17 4 12" strokeLinecap="round" strokeLinejoin="round" />
-                          </svg>
+                        <span
+                          className="ml-2 inline-flex items-center gap-1 rounded-full px-2 py-0.5 align-middle text-[11px] font-medium"
+                          style={{ background: "var(--moss-soft)", color: "var(--moss)" }}
+                        >
+                          <IconCheck />
                           已加入
                         </span>
                       )}
                     </h4>
                   </div>
 
-                  {/* 描述 */}
-                  <p className="mb-4 text-sm leading-relaxed text-slate-500 line-clamp-3">
+                  <p className="mb-4 text-[13px] leading-relaxed line-clamp-3" style={{ color: "var(--ink-soft)" }}>
                     {item.contentBrief || "暂无描述"}
                   </p>
 
-                  {/* 执行时间 */}
-                  <div className="mb-4 inline-flex items-center gap-1.5 rounded-lg bg-slate-50 px-3 py-1.5 text-sm text-slate-600">
-                    <IconClock />
-                    <span>{formatFullDate(item.scheduledDate)}</span>
+                  <div className="mb-4">
+                    <span className="card-inset inline-flex items-center gap-1.5">
+                      <IconClock />
+                      {formatSchedule(item.scheduledDate)}
+                    </span>
                   </div>
 
-                  {/* 底部操作栏 */}
-                  <div className="flex items-center justify-between border-t border-slate-100 pt-4">
-                    <span className="text-xs text-slate-400">
+                  <div className="card-foot">
+                    <span className="card-meta">
                       序号 {item.orderNo} · {categoryName}
                     </span>
-                    <div className="flex gap-1">
+                    <div className="card-actions">
                       {!isPushed && (
-                        <button
-                          type="button"
-                          onClick={() => void handlePushDraftItem(item)}
-                          disabled={loading}
-                          className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-emerald-50 hover:text-emerald-600 disabled:cursor-not-allowed disabled:opacity-50"
+                        <ActionIcon
                           title="加入任务列表"
+                          tone="success"
+                          disabled={loading}
+                          onClick={() => void handlePushDraftItem(item)}
                         >
                           <IconPlusCircle />
-                        </button>
+                        </ActionIcon>
                       )}
-                      <button
-                        type="button"
-                        onClick={() => setEditItem({ ...item })}
-                        className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-blue-50 hover:text-blue-600"
-                        title="编辑"
-                      >
-                        <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
-                          <path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5Z" strokeLinecap="round" strokeLinejoin="round" />
-                        </svg>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void handleDeleteDraftItem(item.id)}
-                        className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-red-50 hover:text-red-500"
-                        title="删除"
-                      >
-                        <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
-                          <polyline points="3 6 5 6 21 6" strokeLinecap="round" strokeLinejoin="round" />
-                          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" strokeLinecap="round" strokeLinejoin="round" />
-                        </svg>
-                      </button>
+                      <ActionIcon title="编辑" onClick={() => setEditItem({ ...item })}>
+                        <IconPen />
+                      </ActionIcon>
+                      <ActionIcon title="删除" tone="danger" onClick={() => void handleDeleteDraftItem(item.id)}>
+                        <IconTrash />
+                      </ActionIcon>
                     </div>
                   </div>
                 </div>
@@ -1624,18 +1772,9 @@ export function App() {
             })}
           </div>
         ) : (
-          <div className="flex min-h-[320px] flex-col items-center justify-center rounded-[20px] border-2 border-dashed border-slate-200 bg-slate-50/80 px-6 text-center">
-            <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-white text-slate-300 shadow-[0_10px_24px_rgba(15,23,42,0.04)]">
-              <IconFileText />
-            </div>
-            <p className="text-sm font-medium text-slate-500">暂无任务项</p>
-            <p className="mt-2 max-w-xs text-sm leading-6 text-slate-400">
-              该批次中还没有生成任务项。
-            </p>
-          </div>
+          <EmptyState icon={<IconFileText />} title="暂无任务项" hint="该批次中还没有生成任务项。" />
         )}
 
-        {/* 编辑弹窗 */}
         <Modal
           visible={editItem !== null}
           title="编辑任务项"
@@ -1643,51 +1782,42 @@ export function App() {
           onClose={() => setEditItem(null)}
         >
           {editItem && (
-            <div className="space-y-4">
-              <label className="block">
-                <span className="mb-1.5 block text-sm font-medium text-slate-700">任务标题</span>
+            <div className="grid gap-4">
+              <label className="field-block">
+                <span>任务标题</span>
                 <input
                   value={editItem.title}
                   onChange={(event) => setEditItem((current) => ({ ...current, title: event.target.value }))}
-                  className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 outline-none transition-all duration-200 hover:border-blue-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
                 />
               </label>
-              <label className="block">
-                <span className="mb-1.5 block text-sm font-medium text-slate-700">任务描述</span>
+              <label className="field-block">
+                <span>任务描述</span>
                 <textarea
                   rows="4"
                   value={editItem.contentBrief}
                   onChange={(event) => setEditItem((current) => ({ ...current, contentBrief: event.target.value }))}
-                  className="w-full resize-none rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm leading-6 text-slate-900 outline-none transition-all duration-200 hover:border-blue-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
                 />
               </label>
-              <label className="block">
-                <span className="mb-1.5 block text-sm font-medium text-slate-700">执行日期</span>
+              <label className="field-block">
+                <span>执行时间（可精确到秒）</span>
                 <input
-                  type="date"
-                  value={editItem.scheduledDate || ""}
+                  type="datetime-local"
+                  step="1"
+                  value={toDatetimeLocalValue(editItem.scheduledDate)}
                   onChange={(event) => setEditItem((current) => ({ ...current, scheduledDate: event.target.value }))}
-                  className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 outline-none transition-all duration-200 hover:border-blue-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
                 />
               </label>
-              <div className="flex justify-end gap-3 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setEditItem(null)}
-                  className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-50"
-                >
-                  取消
-                </button>
-                <button
-                  type="button"
+              <div className="flex justify-end gap-2 pt-1">
+                <ToolbarButton onClick={() => setEditItem(null)}>取消</ToolbarButton>
+                <ToolbarButton
+                  primary
                   onClick={async () => {
                     await saveDraftItem(editItem);
                     setEditItem(null);
                   }}
-                  className="rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-blue-700"
                 >
                   保存
-                </button>
+                </ToolbarButton>
               </div>
             </div>
           )}
@@ -1695,6 +1825,8 @@ export function App() {
       </div>
     );
   }
+
+  /* ------------------------------- 批次详情/编辑 ---------------------------- */
 
   function renderBatchDetail() {
     if (!currentBatch) {
@@ -1729,10 +1861,10 @@ export function App() {
           <div className="kv-grid">
             <div className="kv-item"><span>批次目标</span><strong>{currentBatch.goal || currentBatch.categoryName}</strong></div>
             <div className="kv-item"><span>分类</span><strong>{currentBatch.categoryName}</strong></div>
-            <div className="kv-item"><span>执行器</span><strong>{currentBatch.executorId}</strong></div>
+            <div className="kv-item"><span>执行器</span><strong className="font-mono text-[13px]">{currentBatch.executorId}</strong></div>
             <div className="kv-item"><span>任务数量</span><strong>{currentBatch.itemCount || 0} 条</strong></div>
             <div className="kv-item"><span>状态</span><strong>{statusText(currentBatch.status)}</strong></div>
-            <div className="kv-item"><span>最近更新</span><strong>{formatDateTime(currentBatch.updatedAt)}</strong></div>
+            <div className="kv-item"><span>最近更新</span><strong>{formatTimestamp(currentBatch.updatedAt)}</strong></div>
           </div>
         </section>
       </div>
@@ -1775,7 +1907,7 @@ export function App() {
         <section className="surface-panel">
           <div className="edit-list">
             {currentBatchItems.map((item) => (
-              <div key={item.id} className="edit-item editable">
+              <div key={item.id} className="edit-item">
                 <div className="edit-form-fill">
                   <input
                     value={item.title}
@@ -1805,8 +1937,9 @@ export function App() {
                       }
                     />
                     <input
-                      type="date"
-                      value={item.scheduledDate || ""}
+                      type="datetime-local"
+                      step="1"
+                      value={toDatetimeLocalValue(item.scheduledDate)}
                       onChange={(event) =>
                         setCurrentBatchItems((current) =>
                           current.map((row) => (row.id === item.id ? { ...row, scheduledDate: event.target.value } : row)),
@@ -1824,249 +1957,166 @@ export function App() {
     );
   }
 
-  function renderQueueCategories() {
-    const pendingTotal = queueCategoryCards.reduce((sum, item) => sum + item.pendingCount, 0);
+  /* ------------------------------- 任务列表看板 ------------------------------ */
 
+  function renderTaskBoard() {
     return (
       <div className="page-stack">
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2 text-sm text-slate-500">
-            <span className="inline-flex h-7 items-center gap-1.5 rounded-full bg-blue-50 px-3 text-xs font-medium text-blue-700">
-              共 {queueCategoryCards.length} 个分类
-            </span>
-            {pendingTotal > 0 && (
-              <span className="inline-flex h-7 items-center gap-1.5 rounded-full bg-amber-50 px-3 text-xs font-medium text-amber-700">
-                待执行 {pendingTotal}
-              </span>
-            )}
-          </div>
-          <ToolbarButton onClick={() => void handleRefresh()} disabled={loading}>刷新数据</ToolbarButton>
-        </div>
-
-        {queueCategoryCards.length > 0 ? (
-          <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-3">
-            {queueCategoryCards.map((item) => (
-              <div
-                key={item.id}
-                role="button"
-                tabIndex={0}
-                onClick={() => {
-                  setQueueCategory(item.id);
-                  setScreen("queue-tasks");
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") {
-                    event.preventDefault();
-                    setQueueCategory(item.id);
-                    setScreen("queue-tasks");
-                  }
-                }}
-                className="group cursor-pointer rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_4px_20px_rgba(15,23,42,0.04)] transition-all duration-200 hover:-translate-y-0.5 hover:border-blue-200 hover:shadow-[0_12px_32px_rgba(15,23,42,0.08)]"
-              >
-                <div className="mb-4 flex items-start justify-between gap-3">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50 text-blue-600 transition-colors group-hover:bg-blue-100">
-                      <IconFolder />
-                    </div>
-                    <div>
-                      <h4 className="text-[15px] font-semibold text-slate-900 group-hover:text-blue-700 transition-colors">
-                        {item.name}
-                      </h4>
-                    </div>
-                  </div>
-                  <span className="mt-0.5 flex h-6 w-6 items-center justify-center rounded-lg text-slate-300 transition-colors group-hover:bg-blue-50 group-hover:text-blue-500">
-                    <IconArrowRight />
-                  </span>
-                </div>
-
-                <div className="mb-4 flex items-center gap-4 text-sm text-slate-500">
-                  <span className="font-medium text-slate-700">{item.pendingCount} 条待执行</span>
-                  <span className="text-slate-300">·</span>
-                  <span className="font-medium text-slate-700">{item.completedCount} 条已执行</span>
-                </div>
-
-                <p className="mb-4 text-xs text-slate-400">
-                  正式任务已按状态归档，可从这里进入分类任务列表。
-                </p>
-
-                <div className="rounded-xl bg-slate-50 px-4 py-3">
-                  <div className="flex items-center gap-2 text-sm">
-                    <span className={item.pendingCount > 0 ? "text-amber-500" : "text-slate-300"}>●</span>
-                    <span className="font-medium text-slate-700">
-                      系统默认任务 {item.defaultCount} 条
-                    </span>
-                  </div>
-                </div>
+        <div className="sub-toolbar" style={{ alignItems: "flex-start" }}>
+          <div className="grid gap-2">
+            <div className="filter-row">
+              <span>分类</span>
+              <div className="tab-cluster">
+                <button
+                  type="button"
+                  className={queueCategory === "" ? "active" : ""}
+                  onClick={() => setQueueCategory("")}
+                >
+                  全部
+                </button>
+                {taskCategoryOptions.map((name) => (
+                  <button
+                    key={name}
+                    type="button"
+                    className={queueCategory === name ? "active" : ""}
+                    onClick={() => setQueueCategory(name)}
+                  >
+                    {name}
+                  </button>
+                ))}
               </div>
-            ))}
-          </div>
-        ) : (
-          <div className="flex min-h-[320px] flex-col items-center justify-center rounded-[20px] border-2 border-dashed border-slate-200 bg-slate-50/80 px-6 text-center">
-            <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-white text-slate-300 shadow-[0_10px_24px_rgba(15,23,42,0.04)]">
-              <IconFolder />
             </div>
-            <p className="text-sm font-medium text-slate-500">暂无任务分类</p>
-            <p className="mt-2 max-w-xs text-sm leading-6 text-slate-400">
-              确认草稿批次后，正式任务会按分类展示在这里。
-            </p>
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  function renderQueueTasks() {
-    const pendingTotal = queueTasks.filter((t) => t.status === "pending" || t.status === "running").length;
-
-    return (
-      <div className="page-stack">
-        <div className="sub-toolbar">
-          <div className="breadcrumb-lite">
-            <button type="button" onClick={() => setScreen("queue-categories")}>任务分类</button>
-            <span>/</span>
-            <strong>{queueCategory || "未分类"}</strong>
+            <div className="filter-row">
+              <span>状态</span>
+              <div className="tab-cluster">
+                {taskFilterTabs.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={queueStatus === item.id ? "active" : ""}
+                    onClick={() => setQueueStatus(item.id)}
+                  >
+                    {item.label}
+                    {item.id !== "all" && taskStatusCounts[item.id] > 0
+                      ? ` (${taskStatusCounts[item.id]})`
+                      : ""}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
           <div className="panel-actions">
-            <div className="tab-cluster">
-              {taskStatusTabs.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  className={queueStatus === item.id ? "active" : ""}
-                  onClick={() => setQueueStatus(item.id)}
-                >
-                  {item.label}
-                </button>
-              ))}
-            </div>
-              <ToolbarButton
-                onClick={() => void handleCreateDefaultTask()}
-                disabled={!defaultPlan.enabled || (!defaultTask && defaultPoolCategories.length === 0)}
-              >
-                {defaultTask ? "查看系统默认任务" : "同步系统默认任务"}
-              </ToolbarButton>
-            </div>
+            <ToolbarButton
+              onClick={() => void handleCreateDefaultTask()}
+              disabled={!defaultPlan.enabled || (!defaultTask && defaultPoolCategories.length === 0)}
+            >
+              {defaultTask ? "查看系统默认任务" : "同步系统默认任务"}
+            </ToolbarButton>
           </div>
+        </div>
 
-        {queueTasks.length > 0 ? (
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-            {queueTasks.map((item) => (
-              <div
-                key={item.id}
-                className="group rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_4px_20px_rgba(15,23,42,0.04)] transition-all duration-200 hover:border-blue-200 hover:shadow-[0_8px_28px_rgba(15,23,42,0.07)]"
-              >
-                {/* 头部：标题 */}
-                <div className="mb-3">
-                  <h4 className="text-[15px] font-semibold leading-snug text-slate-900">
-                    {item.title}
-                  </h4>
-                </div>
-
-                {/* 元信息 */}
-                <div className="mb-4 flex flex-wrap items-center gap-3 text-sm text-slate-500">
-                  <div className="inline-flex items-center gap-1.5 rounded-lg bg-slate-50 px-2.5 py-1 text-xs">
-                    <IconClock />
-                    <span>{formatFullDate(item.scheduledDate)}</span>
+        {pagedTasks.length > 0 ? (
+          <>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3 stagger">
+              {pagedTasks.map((item) => (
+                <div key={item.id} className="entry-card">
+                  <div className="mb-2 flex items-start justify-between gap-3">
+                    <h4 className="flex-1" style={{ fontSize: "15px" }}>{item.title}</h4>
+                    <StatusPill tone={statusTone(item.status)}>{statusText(item.status)}</StatusPill>
                   </div>
-                  <span className="text-xs text-slate-400">{taskTypeText(item.taskType)}</span>
-                </div>
 
-                {/* 来源/描述 */}
-                <p className="mb-4 text-sm leading-relaxed text-slate-500 line-clamp-2">
-                  {item.items?.[0]?.contentBrief || item.items?.[0]?.title || "暂无描述"}
-                </p>
+                  <div className="mb-3 flex flex-wrap items-center gap-3">
+                    <span className="card-inset inline-flex items-center gap-1.5 !py-1.5">
+                      <IconClock />
+                      {formatSchedule(item.scheduledDate)}
+                    </span>
+                    <span className="card-meta">{item.categoryName} · {taskTypeText(item.taskType)}</span>
+                  </div>
 
-                {/* 底部操作栏 */}
-                <div className="flex items-center justify-between border-t border-slate-100 pt-4">
-                  <StatusPill tone={statusTone(item.status)}>{statusText(item.status)}</StatusPill>
-                  <div className="flex gap-1">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setCurrentTaskId(item.id);
-                        setScreen("task-detail");
-                      }}
-                      className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-blue-50 hover:text-blue-600"
-                      title="详情"
-                    >
-                      <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
-                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8Z" />
-                        <circle cx="12" cy="12" r="3" />
-                      </svg>
-                    </button>
-                    {item.status === "pending" && (
-                      <button
-                        type="button"
+                  <p className="mb-4 text-[13px] leading-relaxed line-clamp-2" style={{ color: "var(--ink-soft)" }}>
+                    {item.items?.[0]?.contentBrief || item.items?.[0]?.title || "暂无描述"}
+                  </p>
+
+                  <div className="card-foot">
+                    <span className="card-meta">#{item.id}</span>
+                    <div className="card-actions">
+                      <ActionIcon
+                        title="详情"
                         onClick={() => {
                           setCurrentTaskId(item.id);
-                          setScreen("task-edit");
+                          setScreen("task-detail");
                         }}
-                        className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-blue-50 hover:text-blue-600"
-                        title="编辑"
                       >
-                        <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
-                          <path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5Z" strokeLinecap="round" strokeLinejoin="round" />
-                        </svg>
-                      </button>
-                    )}
-                    {item.status === "failed" && (
-                      <button
-                        type="button"
-                        onClick={() => void handleRunTask(item.id)}
-                        disabled={loading}
-                        className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-emerald-50 hover:text-emerald-600 disabled:cursor-not-allowed disabled:opacity-50"
-                        title="重新执行"
-                      >
-                        <IconRefresh />
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => openLogModal(
-                        `任务日志 / ${item.title}`,
-                        "这里展示任务最近一次运行日志。",
-                        buildRunLogLines(runs.find((run) => run.taskId === item.id) || null),
+                        <IconEye />
+                      </ActionIcon>
+                      {item.status === "pending" && (
+                        <ActionIcon
+                          title="编辑"
+                          onClick={() => {
+                            setCurrentTaskId(item.id);
+                            setScreen("task-edit");
+                          }}
+                        >
+                          <IconPen />
+                        </ActionIcon>
                       )}
-                      className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-blue-50 hover:text-blue-600"
-                      title="日志"
-                    >
-                      <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
-                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" strokeLinecap="round" strokeLinejoin="round" />
-                        <polyline points="14 2 14 8 20 8" strokeLinecap="round" strokeLinejoin="round" />
-                        <line x1="16" y1="13" x2="8" y2="13" strokeLinecap="round" strokeLinejoin="round" />
-                        <line x1="16" y1="17" x2="8" y2="17" strokeLinecap="round" strokeLinejoin="round" />
-                      </svg>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void handleDeleteTask(item.id)}
-                      className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-red-50 hover:text-red-500"
-                      title="删除"
-                    >
-                      <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
-                        <polyline points="3 6 5 6 21 6" strokeLinecap="round" strokeLinejoin="round" />
-                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" strokeLinecap="round" strokeLinejoin="round" />
-                      </svg>
-                    </button>
+                      {item.status === "failed" && (
+                        <ActionIcon title="重新执行" tone="success" disabled={loading} onClick={() => void handleRunTask(item.id)}>
+                          <IconRefresh />
+                        </ActionIcon>
+                      )}
+                      <ActionIcon
+                        title="日志"
+                        onClick={() => openLogModal(
+                          `任务日志 / ${item.title}`,
+                          "这里展示任务最近一次运行日志。",
+                          buildRunLogLines(runs.find((run) => run.taskId === item.id) || null),
+                        )}
+                      >
+                        <IconLog />
+                      </ActionIcon>
+                      <ActionIcon title="删除" tone="danger" onClick={() => void handleDeleteTask(item.id)}>
+                        <IconTrash />
+                      </ActionIcon>
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="flex min-h-[320px] flex-col items-center justify-center rounded-[20px] border-2 border-dashed border-slate-200 bg-slate-50/80 px-6 text-center">
-            <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-white text-slate-300 shadow-[0_10px_24px_rgba(15,23,42,0.04)]">
-              <IconFileText />
+              ))}
             </div>
-            <p className="text-sm font-medium text-slate-500">暂无任务</p>
-            <p className="mt-2 max-w-xs text-sm leading-6 text-slate-400">
-              {queueStatus === "pending" ? "暂无待执行任务。" : "暂无已完成任务。"}
-            </p>
-          </div>
+
+            {totalTaskPages > 1 ? (
+              <div className="pager">
+                <ToolbarButton onClick={() => setTaskPage((page) => Math.max(1, page - 1))} disabled={taskPage <= 1}>
+                  上一页
+                </ToolbarButton>
+                <span>
+                  第 {taskPage} / {totalTaskPages} 页 · 共 {queueTasks.length} 条
+                </span>
+                <ToolbarButton
+                  onClick={() => setTaskPage((page) => Math.min(totalTaskPages, page + 1))}
+                  disabled={taskPage >= totalTaskPages}
+                >
+                  下一页
+                </ToolbarButton>
+              </div>
+            ) : (
+              <p className="text-center text-[12px]" style={{ color: "var(--ink-faint)" }}>
+                共 {queueTasks.length} 条任务
+              </p>
+            )}
+          </>
+        ) : (
+          <EmptyState
+            icon={<IconFileText />}
+            title="暂无匹配任务"
+            hint="调整上方筛选条件，或先在智能任务生成页创建并确认草稿。"
+          />
         )}
       </div>
     );
   }
+
+  /* -------------------------------- 任务详情 -------------------------------- */
 
   function renderTaskDetail() {
     if (!currentTask) {
@@ -2077,9 +2127,7 @@ export function App() {
       <div className="page-stack">
         <div className="sub-toolbar">
           <div className="breadcrumb-lite">
-            <button type="button" onClick={() => setScreen("queue-categories")}>任务分类</button>
-            <span>/</span>
-            <button type="button" onClick={() => setScreen("queue-tasks")}>任务列表</button>
+            <button type="button" onClick={() => setScreen("queue-categories")}>任务列表</button>
             <span>/</span>
             <strong>详情</strong>
           </div>
@@ -2098,8 +2146,13 @@ export function App() {
                 {currentTask.status === "failed" ? "重新执行" : "立即执行"}
               </ToolbarButton>
             ) : null}
+            {currentTask.status === "queued" ? (
+              <ToolbarButton onClick={() => void handleDequeueTask(currentTask.id)} disabled={loading}>
+                取消排队
+              </ToolbarButton>
+            ) : null}
             {currentTask.status === "pending" ? (
-              <ToolbarButton primary onClick={() => setScreen("task-edit")}>进入编辑页</ToolbarButton>
+              <ToolbarButton onClick={() => setScreen("task-edit")}>进入编辑页</ToolbarButton>
             ) : null}
           </div>
         </div>
@@ -2109,50 +2162,101 @@ export function App() {
             <div className="kv-grid">
               <div className="kv-item"><span>任务标题</span><strong>{currentTask.title}</strong></div>
               <div className="kv-item"><span>分类</span><strong>{currentTask.categoryName}</strong></div>
-              <div className="kv-item"><span>执行日期</span><strong>{formatDate(currentTask.scheduledDate)}</strong></div>
+              <div className="kv-item"><span>执行时间</span><strong>{formatSchedule(currentTask.scheduledDate)}</strong></div>
               <div className="kv-item"><span>任务来源</span><strong>{taskTypeText(currentTask.taskType)}</strong></div>
               <div className="kv-item"><span>状态</span><strong>{statusText(currentTask.status)}</strong></div>
-              <div className="kv-item"><span>执行器</span><strong>{currentTask.executorId || "未指定"}</strong></div>
+              <div className="kv-item"><span>执行器</span><strong className="font-mono text-[13px]">{currentTask.executorId || "未指定"}</strong></div>
             </div>
 
+            {currentTask.status === "running" ? (
+              <div className="card-inset mt-4" style={{ borderStyle: "solid" }}>
+                <span className="inline-flex items-center gap-2">
+                  <span className="spin inline-flex" style={{ color: "var(--amber)" }}>
+                    <IconRefresh className="h-3.5 w-3.5" />
+                  </span>
+                  任务正在后台执行，写一篇文章通常需要几分钟，状态每 5 秒自动刷新，可离开此页面。
+                </span>
+              </div>
+            ) : null}
+
+            {currentTask.status === "queued" ? (
+              <div className="card-inset mt-4" style={{ borderStyle: "solid" }}>
+                <span className="inline-flex items-center gap-2">
+                  <IconClock />
+                  已加入执行队列，将按顺序自动执行（同一时刻只执行一个任务），状态每 5 秒自动刷新。
+                </span>
+              </div>
+            ) : null}
+
             {currentTask.articlePath || currentTask.publishResult ? (
-              <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50/50 p-4">
-                <h4 className="mb-3 text-sm font-semibold text-emerald-800">发布结果</h4>
-                <div className="space-y-2 text-sm text-slate-700">
+              <div className="publish-panel">
+                <h4>发布结果</h4>
+                <dl>
                   {currentTask.articleTitle ? (
-                    <p><span className="text-slate-500">文章标题：</span>{currentTask.articleTitle}</p>
+                    <div>
+                      <dt>文章标题</dt>
+                      <dd>{currentTask.articleTitle}</dd>
+                    </div>
                   ) : null}
                   {currentTask.articlePath ? (
-                    <p className="break-all"><span className="text-slate-500">文章路径：</span>{currentTask.articlePath}</p>
+                    <div>
+                      <dt>文章路径</dt>
+                      <dd className="mono">{currentTask.articlePath}</dd>
+                    </div>
                   ) : null}
                   {currentTask.publishResult ? (
                     <>
-                      <p>
-                        <span className="text-slate-500">Git 提交：</span>
-                        {currentTask.publishResult.committed ? "已提交" : "未提交"}
-                        <span className="mx-2 text-slate-300">·</span>
-                        <span className="text-slate-500">推送：</span>
-                        {currentTask.publishResult.pushed ? `已推送到 ${currentTask.publishResult.branch}` : "未推送"}
-                      </p>
+                      <div>
+                        <dt>Git 状态</dt>
+                        <dd>
+                          {currentTask.publishResult.committed ? "已提交" : "未提交"}
+                          <span style={{ margin: "0 8px", color: "var(--line-strong)" }}>·</span>
+                          {currentTask.publishResult.pushed
+                            ? `已推送到 ${currentTask.publishResult.branch}`
+                            : "未推送"}
+                        </dd>
+                      </div>
+                      {currentTask.publishResult.pushError ? (
+                        <div>
+                          <dt>推送失败原因</dt>
+                          <dd className="publish-error">{currentTask.publishResult.pushError}</dd>
+                        </div>
+                      ) : null}
+                      {currentTask.publishResult.pushSkipped && !currentTask.publishResult.pushed ? (
+                        <div>
+                          <dt>推送说明</dt>
+                          <dd>{currentTask.publishResult.pushSkipped}</dd>
+                        </div>
+                      ) : null}
                       {Array.isArray(currentTask.publishResult.files) && currentTask.publishResult.files.length > 1 ? (
-                        <p className="break-all">
-                          <span className="text-slate-500">提交文件：</span>
-                          {currentTask.publishResult.files.join("、")}
-                        </p>
+                        <div>
+                          <dt>提交文件</dt>
+                          <dd className="mono">{currentTask.publishResult.files.join("\n")}</dd>
+                        </div>
                       ) : null}
                       {Array.isArray(currentTask.publishResult.fixedFrontMatterFields) &&
                       currentTask.publishResult.fixedFrontMatterFields.length > 0 ? (
-                        <p>
-                          <span className="text-slate-500">已自动补齐 front-matter 字段：</span>
-                          {currentTask.publishResult.fixedFrontMatterFields.join("、")}
-                        </p>
+                        <div>
+                          <dt>已自动补齐 front-matter 字段</dt>
+                          <dd>{currentTask.publishResult.fixedFrontMatterFields.join("、")}</dd>
+                        </div>
                       ) : null}
                       {currentTask.publishResult.error ? (
-                        <p className="text-red-600">发布出错：{currentTask.publishResult.error}</p>
+                        <div>
+                          <dt>发布出错</dt>
+                          <dd className="publish-error">{currentTask.publishResult.error}</dd>
+                        </div>
                       ) : null}
                     </>
                   ) : null}
-                </div>
+                </dl>
+                {currentTask.articlePath && !currentTask.publishResult?.pushed ? (
+                  <div className="mt-3 flex justify-end">
+                    <ToolbarButton primary onClick={() => void handlePushTask(currentTask.id)} disabled={loading}>
+                      手动推送到远端
+                    </ToolbarButton>
+                  </div>
+                ) : null}
               </div>
             ) : null}
           </section>
@@ -2161,7 +2265,7 @@ export function App() {
             <div className="panel-head">
               <div>
                 <h3>知识点与结果</h3>
-                <p>{latestTaskRun ? `最近运行：${formatDateTime(latestTaskRun.startedAt)}` : "暂无运行记录"}</p>
+                <p>{latestTaskRun ? `最近运行：${formatTimestamp(latestTaskRun.startedAt)}` : "暂无运行记录"}</p>
               </div>
             </div>
             <ul className="point-list">
@@ -2175,6 +2279,8 @@ export function App() {
     );
   }
 
+  /* -------------------------------- 任务编辑 -------------------------------- */
+
   function renderTaskEdit() {
     if (!taskEditor) {
       return <div className="empty-inline">当前没有可编辑的任务。</div>;
@@ -2184,9 +2290,7 @@ export function App() {
       <div className="page-stack">
         <div className="sub-toolbar">
           <div className="breadcrumb-lite">
-            <button type="button" onClick={() => setScreen("queue-categories")}>任务分类</button>
-            <span>/</span>
-            <button type="button" onClick={() => setScreen("queue-tasks")}>任务列表</button>
+            <button type="button" onClick={() => setScreen("queue-categories")}>任务列表</button>
             <span>/</span>
             <strong>编辑</strong>
           </div>
@@ -2203,35 +2307,43 @@ export function App() {
             <div className="empty-inline">只有待执行任务可以编辑。</div>
           ) : (
             <div className="edit-list">
-              <div className="edit-item editable">
+              <div className="edit-item">
                 <div className="edit-form-fill">
-                  <input
-                    value={taskEditor.title}
-                    onChange={(event) => setTaskEditor((current) => (current ? { ...current, title: event.target.value } : current))}
-                  />
-                  <div className="inline-edit-grid">
+                  <label className="field-block">
+                    <span>任务标题</span>
                     <input
-                      type="date"
-                      value={taskEditor.scheduledDate || ""}
+                      value={taskEditor.title}
+                      onChange={(event) => setTaskEditor((current) => (current ? { ...current, title: event.target.value } : current))}
+                    />
+                  </label>
+                  <label className="field-block">
+                    <span>执行时间（可精确到秒）</span>
+                    <input
+                      type="datetime-local"
+                      step="1"
+                      value={toDatetimeLocalValue(taskEditor.scheduledDate)}
                       onChange={(event) =>
                         setTaskEditor((current) => (current ? { ...current, scheduledDate: event.target.value } : current))
                       }
                     />
-                  </div>
+                  </label>
                 </div>
               </div>
 
               {taskEditor.items.map((item) => (
-                <div key={item.id} className="edit-item editable">
+                <div key={item.id} className="edit-item">
                   <div className="edit-form-fill">
                     <input value={item.title} onChange={(event) => updateTaskEditorItem(item.id, "title", event.target.value)} />
                     <textarea rows="3" value={item.contentBrief} onChange={(event) => updateTaskEditorItem(item.id, "contentBrief", event.target.value)} />
                     <div className="inline-edit-grid">
-                      <input
-                        type="number"
-                        value={item.orderNo}
-                        onChange={(event) => updateTaskEditorItem(item.id, "orderNo", Number(event.target.value))}
-                      />
+                      <label className="field-block">
+                        <span>序号</span>
+                        <input
+                          type="number"
+                          value={item.orderNo}
+                          onChange={(event) => updateTaskEditorItem(item.id, "orderNo", Number(event.target.value))}
+                        />
+                      </label>
                     </div>
                   </div>
                 </div>
@@ -2243,326 +2355,399 @@ export function App() {
     );
   }
 
-  function renderSettings() {
+  /* -------------------------------- 配置中心 -------------------------------- */
+
+  function renderSettingsRepository() {
     return (
-      <div className="page-stack">
-        <div className="split-layout">
-          <div className="grid gap-4">
-            <section className="surface-panel">
-              <div className="panel-head">
-                <div>
-                  <h3>仓库与默认任务</h3>
-                  <p>维护博客仓库、扫描来源、默认执行器，以及系统内置默认任务的启停状态。</p>
-                </div>
-                <div className="panel-actions">
-                  <StatusPill tone={defaultPlan.enabled ? "success" : "default"}>
-                    {defaultPlan.enabled ? "默认任务已启用" : "默认任务已关闭"}
-                  </StatusPill>
-                  <StatusPill tone={defaultTask ? "accent" : "default"}>
-                    {defaultTask ? `内置任务 / ${defaultTask.categoryName}` : "内置任务未创建"}
-                  </StatusPill>
-                </div>
-              </div>
+      <section className="surface-panel rise">
+        <div className="panel-head">
+          <div>
+            <h3>仓库与发布</h3>
+            <p>博客仓库的位置、目标分支与文档目录，以及执行成功后的推送策略。</p>
+          </div>
+        </div>
 
-              <div className="form-blocks">
-                <label className="field-block">
-                  <span>仓库路径</span>
-                  <input value={repository.path} onChange={(event) => setRepository((current) => ({ ...current, path: event.target.value }))} />
-                </label>
-                <label className="field-block">
-                  <span>目标分支</span>
-                  <input value={repository.branch} onChange={(event) => setRepository((current) => ({ ...current, branch: event.target.value }))} />
-                </label>
-                <label className="field-block">
-                  <span>文档目录</span>
-                  <input value={repository.docsDir} onChange={(event) => setRepository((current) => ({ ...current, docsDir: event.target.value }))} />
-                </label>
-                <label className="field-block">
-                  <span>默认执行器</span>
-                  <select
-                    value={defaultPlan.defaultExecutorId}
-                    onChange={(event) => setDefaultPlan((current) => ({ ...current, defaultExecutorId: event.target.value }))}
-                  >
-                    {executors.map((executor) => (
-                      <option key={executor.id} value={executor.id}>
-                        {executor.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
+        <div className="form-blocks">
+          <div className="field-block wide field-mono">
+            <span>仓库路径</span>
+            <div className="flex gap-2">
+              <input
+                className="flex-1"
+                value={repository.path}
+                onChange={(event) => setRepository((current) => ({ ...current, path: event.target.value }))}
+              />
+              <ToolbarButton
+                onClick={() =>
+                  openPicker({
+                    title: "选择博客仓库目录",
+                    mode: "dir",
+                    initialPath: repository.path,
+                    onPick: (value) => setRepository((current) => ({ ...current, path: value })),
+                  })
+                }
+              >
+                选择目录
+              </ToolbarButton>
+            </div>
+            <p>可直接输入，也可以通过目录浏览选择。</p>
+          </div>
+          <label className="field-block field-mono">
+            <span>目标分支</span>
+            <input value={repository.branch} onChange={(event) => setRepository((current) => ({ ...current, branch: event.target.value }))} />
+          </label>
+          <label className="field-block field-mono">
+            <span>文档目录</span>
+            <input value={repository.docsDir} onChange={(event) => setRepository((current) => ({ ...current, docsDir: event.target.value }))} />
+          </label>
+          <label className="toggle-row wide" style={{ gridColumn: "span 2" }}>
+            <input
+              type="checkbox"
+              checked={repository.autoPush}
+              onChange={(event) => setRepository((current) => ({ ...current, autoPush: event.target.checked }))}
+            />
+            <span>
+              <strong>自动推送 Git</strong>
+              <p>任务执行成功并提交后，自动 push 到远端分支，GitHub Pages 随之发布上线。</p>
+            </span>
+          </label>
+        </div>
 
-              <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                <div className="field-block">
-                  <span>内置默认任务</span>
-                  <label className="inline-flex items-center gap-3 text-sm text-slate-700">
-                    <input
-                      type="checkbox"
-                      checked={defaultPlan.enabled}
-                      onChange={(event) => setDefaultPlan((current) => ({ ...current, enabled: event.target.checked }))}
-                    />
-                    启用系统内置默认任务
-                  </label>
-                  <p>关闭后会移除唯一的系统默认任务；开启后会按默认分类池自动保留 1 条。</p>
-                </div>
-                <div className="field-block">
-                  <span>自动推送 Git</span>
-                  <label className="inline-flex items-center gap-3 text-sm text-slate-700">
-                    <input
-                      type="checkbox"
-                      checked={repository.autoPush}
-                      onChange={(event) => setRepository((current) => ({ ...current, autoPush: event.target.checked }))}
-                    />
-                    执行成功后自动 push 到远端
-                  </label>
-                  <p>当前默认分类池 {defaultPoolCategories.length} 个分类，可用于系统默认任务随机选类。</p>
-                </div>
-                <div className="field-block">
-                  <span>定时自动执行</span>
-                  <label className="inline-flex items-center gap-3 text-sm text-slate-700">
-                    <input
-                      type="checkbox"
-                      checked={defaultPlan.autoScheduleEnabled}
-                      onChange={(event) =>
-                        setDefaultPlan((current) => ({ ...current, autoScheduleEnabled: event.target.checked }))
-                      }
-                    />
-                    到期任务自动执行
-                  </label>
-                  <p>开启后，服务端每分钟检查一次执行日期已到的待执行任务，用默认执行器自动写作并发布。</p>
-                </div>
-              </div>
+        <div className="panel-foot">
+          <ToolbarButton primary onClick={() => void handleSaveRepository()} disabled={loading}>保存仓库配置</ToolbarButton>
+        </div>
+      </section>
+    );
+  }
 
-              <div className="panel-actions">
-                <ToolbarButton onClick={() => void handleScanRepository()} disabled={loading}>扫描仓库分类</ToolbarButton>
-                <ToolbarButton onClick={() => void handleSaveRepository()} disabled={loading}>保存仓库配置</ToolbarButton>
-                <ToolbarButton primary onClick={() => void handleSaveDefaultPlan()} disabled={loading}>保存默认任务配置</ToolbarButton>
-                <ToolbarButton
-                  onClick={() => void handleCreateDefaultTask()}
-                  disabled={!defaultPlan.enabled || (!defaultTask && defaultPoolCategories.length === 0)}
-                >
-                  {defaultTask ? "同步并定位默认任务" : "立即创建默认任务"}
-                </ToolbarButton>
-              </div>
-            </section>
+  function renderSettingsAutomation() {
+    return (
+      <section className="surface-panel rise">
+        <div className="panel-head">
+          <div>
+            <h3>自动化与默认任务</h3>
+            <p>控制系统默认任务、默认执行器以及到期任务的定时自动执行。</p>
+          </div>
+          <div className="panel-actions">
+            <StatusPill tone={defaultPlan.enabled ? "success" : "default"}>
+              {defaultPlan.enabled ? "默认任务已启用" : "默认任务已关闭"}
+            </StatusPill>
+            <StatusPill tone={defaultTask ? "accent" : "default"}>
+              {defaultTask ? `内置任务 / ${defaultTask.categoryName}` : "内置任务未创建"}
+            </StatusPill>
+          </div>
+        </div>
 
-            <section className="surface-panel">
-              <div className="panel-head">
-                <div>
-                  <h3>分类管理</h3>
-                  <p>支持新增自定义分类，并维护哪些分类允许生成任务、哪些进入默认任务池。</p>
-                </div>
-                <StatusPill tone="accent">{categories.length} 个分类</StatusPill>
-              </div>
+        <div className="form-blocks">
+          <label className="field-block">
+            <span>默认执行器</span>
+            <select
+              value={defaultPlan.defaultExecutorId}
+              onChange={(event) => setDefaultPlan((current) => ({ ...current, defaultExecutorId: event.target.value }))}
+            >
+              {executors.map((executor) => (
+                <option key={executor.id} value={executor.id}>
+                  {executor.name}
+                </option>
+              ))}
+            </select>
+            <p>系统默认任务与定时调度执行时使用的执行器。</p>
+          </label>
+          <div className="field-block">
+            <span>默认任务池</span>
+            <div className="card-inset" style={{ padding: "12px 14px" }}>
+              当前有 <strong>{defaultPoolCategories.length}</strong> 个分类加入默认池，可供系统默认任务随机选类。
+              可在「分类管理」标签页调整。
+            </div>
+          </div>
+          <label className="toggle-row">
+            <input
+              type="checkbox"
+              checked={defaultPlan.enabled}
+              onChange={(event) => setDefaultPlan((current) => ({ ...current, enabled: event.target.checked }))}
+            />
+            <span>
+              <strong>启用系统内置默认任务</strong>
+              <p>关闭后会移除唯一的系统默认任务；开启后会按默认分类池自动保留 1 条。</p>
+            </span>
+          </label>
+          <label className="toggle-row">
+            <input
+              type="checkbox"
+              checked={defaultPlan.autoScheduleEnabled}
+              onChange={(event) =>
+                setDefaultPlan((current) => ({ ...current, autoScheduleEnabled: event.target.checked }))
+              }
+            />
+            <span>
+              <strong>到期任务自动执行</strong>
+              <p>开启后，服务端每分钟检查一次执行日期已到的待执行任务，用默认执行器自动写作并发布。</p>
+            </span>
+          </label>
+        </div>
 
-              <div className="form-blocks">
-                <label className="field-block wide">
-                  <span>新增自定义分类</span>
-                  <input
-                    value={categoryForm.name}
-                    placeholder="例如：React 性能优化"
-                    onChange={(event) => setCategoryForm((current) => ({ ...current, name: event.target.value }))}
-                  />
-                </label>
-                <div className="field-block">
-                  <span>创建后状态</span>
-                  <label className="inline-flex items-center gap-3 text-sm text-slate-700">
-                    <input
-                      type="checkbox"
-                      checked={categoryForm.enabled}
-                      onChange={(event) => setCategoryForm((current) => ({ ...current, enabled: event.target.checked }))}
-                    />
-                    立即启用
-                  </label>
-                </div>
-                <div className="field-block">
-                  <span>默认任务池</span>
-                  <label className="inline-flex items-center gap-3 text-sm text-slate-700">
-                    <input
-                      type="checkbox"
-                      checked={categoryForm.isDefaultPool}
-                      onChange={(event) => setCategoryForm((current) => ({ ...current, isDefaultPool: event.target.checked }))}
-                    />
-                    加入默认任务池
-                  </label>
-                </div>
-              </div>
-              <div className="panel-actions">
-                <ToolbarButton primary onClick={() => void handleCreateCategory()} disabled={loading}>新增分类</ToolbarButton>
-              </div>
+        <div className="panel-foot">
+          <ToolbarButton primary onClick={() => void handleSaveDefaultPlan()} disabled={loading}>保存自动化配置</ToolbarButton>
+          <ToolbarButton
+            onClick={() => void handleCreateDefaultTask()}
+            disabled={!defaultPlan.enabled || (!defaultTask && defaultPoolCategories.length === 0)}
+          >
+            {defaultTask ? "同步并定位默认任务" : "立即创建默认任务"}
+          </ToolbarButton>
+        </div>
+      </section>
+    );
+  }
 
-              <div className="mini-list">
-                {categories.length > 0 ? categories.map((category) => (
-                  <div key={category.id} className="mini-list-row editable">
-                    <div className="list-fill">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <strong>{category.name}</strong>
-                        <StatusPill tone={category.enabled ? "success" : "default"}>
-                          {category.enabled ? "已启用" : "已停用"}
-                        </StatusPill>
-                        {category.isDefaultPool ? <StatusPill tone="accent">默认池</StatusPill> : null}
-                      </div>
-                      <p>
-                        {categorySourceText(category.source)} · 已索引 {category.articleCount || 0} 篇文章
-                        {category.displayName && category.displayName !== category.name
-                          ? ` · 文章分类名：${category.displayName}`
-                          : ""}
-                      </p>
-                      <div className="inline-edit-grid">
-                        <label className="inline-flex items-center gap-2 text-sm text-slate-700">
-                          <input
-                            type="checkbox"
-                            checked={category.enabled}
-                            onChange={(event) => updateCategoryDraft(category.id, "enabled", event.target.checked)}
-                          />
-                          允许用于生成任务
-                        </label>
-                        <label className="inline-flex items-center gap-2 text-sm text-slate-700">
-                          <input
-                            type="checkbox"
-                            checked={category.isDefaultPool}
-                            onChange={(event) => updateCategoryDraft(category.id, "isDefaultPool", event.target.checked)}
-                          />
-                          加入默认任务池
-                        </label>
-                        <ToolbarButton onClick={() => void handleSaveCategory(category)} disabled={loading}>保存</ToolbarButton>
-                      </div>
-                    </div>
-                  </div>
-                )) : (
-                  <div className="empty-inline">还没有分类。先扫描仓库，或者手动新增一个自定义分类。</div>
-                )}
-              </div>
-            </section>
+  function renderSettingsCategories() {
+    return (
+      <div className="page-stack rise" style={{ padding: 0 }}>
+        <section className="surface-panel">
+          <div className="panel-head">
+            <div>
+              <h3>新增自定义分类</h3>
+              <p>除仓库扫描外，也可以手动添加一个新分类，首篇文章发布时会自动建目录。</p>
+            </div>
           </div>
 
-          <section className="surface-panel">
-            <div className="panel-head">
-              <div>
-                <h3>执行器列表</h3>
-                <p>统一测试和维护，不和任务页混排。</p>
-              </div>
-            </div>
-            <div className="mini-list">
-              {executors.map((executor) => (
-                <div key={executor.id} className="mini-list-row">
-                  <div className="list-fill">
-                    <strong>{executor.name}</strong>
-                    <p>{executor.id} · {executor.type}</p>
-                    <div className="grid gap-2">
-                      <label className="block">
-                        <span className="mb-1 block text-xs text-slate-500">名称</span>
-                        <input
-                          className="w-full"
-                          value={executor.name}
-                          onChange={(event) => handleExecutorChange(executor.id, "name", event.target.value)}
-                        />
-                      </label>
-                      <label className="block">
-                        <span className="mb-1 block text-xs text-slate-500">命令</span>
-                        <input
-                          className="w-full"
-                          value={executor.command}
-                          onChange={(event) => handleExecutorChange(executor.id, "command", event.target.value)}
-                        />
-                      </label>
-                      <label className="block">
-                        <span className="mb-1 block text-xs text-slate-500">参数模板（JSON 数组，{"{promptContent}"} 会被替换为 Prompt）</span>
-                        <input
-                          className="w-full font-mono text-xs"
-                          value={executor.argsTemplateText ?? JSON.stringify(executor.argsTemplate)}
-                          onChange={(event) => handleExecutorChange(executor.id, "argsTemplateText", event.target.value)}
-                        />
-                      </label>
-                      <div className="grid grid-cols-2 gap-2">
-                        <label className="block">
-                          <span className="mb-1 block text-xs text-slate-500">工作目录</span>
-                          <input
-                            className="w-full"
-                            value={executor.workingDirectory}
-                            onChange={(event) => handleExecutorChange(executor.id, "workingDirectory", event.target.value)}
-                          />
-                        </label>
-                        <label className="block">
-                          <span className="mb-1 block text-xs text-slate-500">超时（毫秒）</span>
-                          <input
-                            className="w-full"
-                            type="number"
-                            min="1000"
-                            step="1000"
-                            value={executor.timeoutMs}
-                            onChange={(event) => handleExecutorChange(executor.id, "timeoutMs", Number(event.target.value))}
-                          />
-                        </label>
-                      </div>
-                      <label className="inline-flex items-center gap-2 text-sm text-slate-700 whitespace-nowrap">
-                        <input
-                          type="checkbox"
-                          checked={executor.enabled}
-                          onChange={(event) => handleExecutorChange(executor.id, "enabled", event.target.checked)}
-                        />
-                        启用
-                      </label>
-                    </div>
-                  </div>
-                  <div className="mini-list-actions">
-                    <StatusPill tone={executor.enabled ? "success" : "default"}>{executor.enabled ? "启用中" : "已停用"}</StatusPill>
-                    <ToolbarButton onClick={() => void handleSaveExecutor(executor)} disabled={loading}>保存</ToolbarButton>
-                  </div>
-                </div>
-              ))}
-            </div>
+          <div className="form-blocks">
+            <label className="field-block wide">
+              <span>分类名称</span>
+              <input
+                value={categoryForm.name}
+                placeholder="例如：React 性能优化"
+                onChange={(event) => setCategoryForm((current) => ({ ...current, name: event.target.value }))}
+              />
+            </label>
+            <label className="toggle-row">
+              <input
+                type="checkbox"
+                checked={categoryForm.enabled}
+                onChange={(event) => setCategoryForm((current) => ({ ...current, enabled: event.target.checked }))}
+              />
+              <span>
+                <strong>立即启用</strong>
+                <p>启用后可在智能任务生成页选择该分类。</p>
+              </span>
+            </label>
+            <label className="toggle-row">
+              <input
+                type="checkbox"
+                checked={categoryForm.isDefaultPool}
+                onChange={(event) => setCategoryForm((current) => ({ ...current, isDefaultPool: event.target.checked }))}
+              />
+              <span>
+                <strong>加入默认任务池</strong>
+                <p>加入后，系统默认任务会将其纳入随机选类范围。</p>
+              </span>
+            </label>
+          </div>
+          <div className="panel-foot">
+            <ToolbarButton primary onClick={() => void handleCreateCategory()} disabled={loading}>新增分类</ToolbarButton>
+          </div>
+        </section>
 
-            <div className="surface-panel nested-panel">
-              <div className="panel-head">
-                <div>
-                  <h3>执行器测试</h3>
-                  <p>测试结果会直接显示在当前界面。</p>
-                </div>
-              </div>
-              <div className="form-blocks">
-                <label className="field-block">
-                  <span>测试执行器</span>
-                  <select
-                    value={executorTest.executorId}
-                    onChange={(event) => setExecutorTest((current) => ({ ...current, executorId: event.target.value }))}
-                  >
-                    {executors.map((executor) => (
-                      <option key={executor.id} value={executor.id}>
-                        {executor.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="field-block wide">
-                  <span>测试 Prompt</span>
-                  <textarea
-                    rows="4"
-                    value={executorTest.promptContent}
-                    onChange={(event) => setExecutorTest((current) => ({ ...current, promptContent: event.target.value }))}
-                  />
-                </label>
-              </div>
-              <div className="panel-actions">
-                <ToolbarButton primary onClick={() => void handleTestExecutor()} disabled={loading}>发送测试</ToolbarButton>
-              </div>
-              {executorTest.result ? (
-                <div className="log-lines">
-                  {buildRunLogLines({
-                    promptText: executorTest.result.promptText,
-                    stdoutText: executorTest.result.stdoutText,
-                    stderrText: executorTest.result.stderrText,
-                  }).map((line) => (
-                    <div key={line} className="log-line">{line}</div>
-                  ))}
-                </div>
-              ) : null}
+        <section className="surface-panel">
+          <div className="panel-head">
+            <div>
+              <h3>分类列表</h3>
+              <p>维护哪些分类允许生成任务、哪些进入默认任务池。扫描会从博客仓库同步分类与文章索引，新分类默认加入默认任务池。</p>
             </div>
-          </section>
-        </div>
+            <div className="panel-actions">
+              <span className="stat-chip">
+                共 <strong>{categories.length}</strong> 个分类
+              </span>
+              <ToolbarButton primary onClick={() => void handleScanRepository()} disabled={loading}>
+                扫描仓库分类
+              </ToolbarButton>
+            </div>
+          </div>
+
+          <div className="mini-list">
+            {categories.length > 0 ? categories.map((category) => (
+              <div key={category.id} className="mini-list-row">
+                <div className="list-fill">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <strong style={{ fontFamily: "var(--font-display)", fontSize: "15px" }}>{category.name}</strong>
+                    <StatusPill tone={category.enabled ? "success" : "default"}>
+                      {category.enabled ? "已启用" : "已停用"}
+                    </StatusPill>
+                    {category.isDefaultPool ? <StatusPill tone="accent">默认池</StatusPill> : null}
+                  </div>
+                  <p>
+                    {categorySourceText(category.source)} · 已索引 {category.articleCount || 0} 篇文章
+                    {category.displayName && category.displayName !== category.name
+                      ? ` · 文章分类名：${category.displayName}`
+                      : ""}
+                  </p>
+                  <div className="flex flex-wrap items-center gap-5">
+                    <label className="inline-flex items-center gap-2 text-[13px]" style={{ color: "var(--ink-soft)" }}>
+                      <input
+                        type="checkbox"
+                        checked={category.enabled}
+                        onChange={(event) => updateCategoryDraft(category.id, "enabled", event.target.checked)}
+                      />
+                      允许用于生成任务
+                    </label>
+                    <label className="inline-flex items-center gap-2 text-[13px]" style={{ color: "var(--ink-soft)" }}>
+                      <input
+                        type="checkbox"
+                        checked={category.isDefaultPool}
+                        onChange={(event) => updateCategoryDraft(category.id, "isDefaultPool", event.target.checked)}
+                      />
+                      加入默认任务池
+                    </label>
+                  </div>
+                </div>
+                <div className="mini-list-actions">
+                  <ToolbarButton onClick={() => void handleSaveCategory(category)} disabled={loading}>保存</ToolbarButton>
+                </div>
+              </div>
+            )) : (
+              <div className="empty-inline">还没有分类。点击上方「扫描仓库分类」从博客仓库同步，或手动新增一个自定义分类。</div>
+            )}
+          </div>
+        </section>
       </div>
     );
   }
+
+  function renderSettingsExecutors() {
+    return (
+      <div className="page-stack rise" style={{ padding: 0 }}>
+        <section className="surface-panel">
+          <div className="panel-head">
+            <div>
+              <h3>执行器列表</h3>
+              <p>执行器是本机的 CLI Agent 命令，负责实际的计划生成与文章写作。命令可自动扫描、浏览文件或手动输入；配置修改后点「测试」即可验证。</p>
+            </div>
+          </div>
+          <div className="mini-list">
+            {executors.map((executor) => (
+              <div key={executor.id} className="mini-list-row">
+                <div className="list-fill">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <strong style={{ fontFamily: "var(--font-display)", fontSize: "15px" }}>{executor.name}</strong>
+                    <StatusPill tone={executor.enabled ? "success" : "default"}>
+                      {executor.enabled ? "启用中" : "已停用"}
+                    </StatusPill>
+                  </div>
+                  <p className="font-mono text-[11.5px]">{executor.id} · {executor.type}</p>
+                  <div className="grid gap-3">
+                    <label className="field-block">
+                      <span>名称</span>
+                      <input
+                        value={executor.name}
+                        onChange={(event) => handleExecutorChange(executor.id, "name", event.target.value)}
+                      />
+                    </label>
+                    <div className="field-block field-mono">
+                      <span>命令</span>
+                      <div className="flex flex-wrap gap-2">
+                        <input
+                          className="min-w-[220px] flex-1"
+                          value={executor.command}
+                          onChange={(event) => handleExecutorChange(executor.id, "command", event.target.value)}
+                        />
+                        <ToolbarButton onClick={() => void openDiscover(executor.id)}>自动扫描</ToolbarButton>
+                        <ToolbarButton
+                          onClick={() =>
+                            openPicker({
+                              title: "选择执行器命令文件",
+                              mode: "file",
+                              initialPath: commandParentDirectory(executor.command),
+                              onPick: (value) => handleExecutorChange(executor.id, "command", value),
+                            })
+                          }
+                        >
+                          浏览文件
+                        </ToolbarButton>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      <div className="field-block field-mono">
+                        <span>工作目录（Agent 在该目录下执行）</span>
+                        <div className="flex gap-2">
+                          <input
+                            className="flex-1"
+                            value={executor.workingDirectory}
+                            onChange={(event) => handleExecutorChange(executor.id, "workingDirectory", event.target.value)}
+                          />
+                          <ToolbarButton
+                            onClick={() =>
+                              openPicker({
+                                title: "选择工作目录",
+                                mode: "dir",
+                                initialPath: executor.workingDirectory,
+                                onPick: (value) => handleExecutorChange(executor.id, "workingDirectory", value),
+                              })
+                            }
+                          >
+                            选择
+                          </ToolbarButton>
+                        </div>
+                      </div>
+                      <label className="field-block">
+                        <span>超时（毫秒）</span>
+                        <input
+                          type="number"
+                          min="1000"
+                          step="1000"
+                          value={executor.timeoutMs}
+                          onChange={(event) => handleExecutorChange(executor.id, "timeoutMs", Number(event.target.value))}
+                        />
+                      </label>
+                    </div>
+                    <label className="inline-flex items-center gap-2 text-[13px]" style={{ color: "var(--ink-soft)" }}>
+                      <input
+                        type="checkbox"
+                        checked={executor.enabled}
+                        onChange={(event) => handleExecutorChange(executor.id, "enabled", event.target.checked)}
+                      />
+                      启用该执行器
+                    </label>
+                  </div>
+                </div>
+                <div className="mini-list-actions">
+                  <ToolbarButton primary onClick={() => void handleSaveExecutor(executor)} disabled={loading}>保存</ToolbarButton>
+                  <ToolbarButton onClick={() => void handleTestExecutorRow(executor)} disabled={loading}>
+                    {loading ? "执行中..." : "测试"}
+                  </ToolbarButton>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      </div>
+    );
+  }
+
+  function renderSettings() {
+    return (
+      <div>
+        <div className="settings-tabs" role="tablist">
+          {SETTINGS_TABS.map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              role="tab"
+              aria-selected={settingsTab === tab.id}
+              className={`settings-tab ${settingsTab === tab.id ? "active" : ""}`}
+              onClick={() => setSettingsTab(tab.id)}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        {settingsTab === "repository" ? renderSettingsRepository() : null}
+        {settingsTab === "automation" ? renderSettingsAutomation() : null}
+        {settingsTab === "categories" ? renderSettingsCategories() : null}
+        {settingsTab === "executors" ? renderSettingsExecutors() : null}
+      </div>
+    );
+  }
+
+  /* --------------------------------- 渲染 ---------------------------------- */
 
   function renderContent() {
     switch (screen) {
@@ -2579,9 +2764,7 @@ export function App() {
       case "batch-edit":
         return renderBatchEdit();
       case "queue-categories":
-        return renderQueueCategories();
-      case "queue-tasks":
-        return renderQueueTasks();
+        return renderTaskBoard();
       case "task-detail":
         return renderTaskDetail();
       case "task-edit":
@@ -2593,15 +2776,17 @@ export function App() {
     }
   }
 
+  const pageMeta = PAGE_META[screen] || { title: "", subtitle: "" };
+
   return (
     <>
       <div className="shell">
         <aside className="sidebar">
           <div className="brand">
-            <LogoMark />
+            <span className="brand-seal" aria-hidden="true">砚</span>
             <div>
-              <h1>TaskShelf</h1>
-              <p>Admin Console</p>
+              <h1>砚台</h1>
+              <p>博客自动写作台</p>
             </div>
           </div>
           <nav className="nav">
@@ -2620,27 +2805,167 @@ export function App() {
               </button>
             ))}
           </nav>
+          <div className="sidebar-foot">INKSTONE · 砚台</div>
         </aside>
 
         <main className="workspace">
-          {message ? <div className={`message-banner message-banner-${messageTone}`}>{message}</div> : null}
-          <div className="workspace-actions">
-            <ToolbarButton onClick={() => void handleRefresh()} disabled={loading}>刷新数据</ToolbarButton>
-          </div>
+          <header className="page-header">
+            <div>
+              <h2>
+                {pageMeta.title}
+                <em aria-hidden="true" />
+              </h2>
+              <p className="page-sub">{pageMeta.subtitle}</p>
+            </div>
+            <div className="panel-actions">
+              <ToolbarButton onClick={() => void handleRefresh()} disabled={loading}>
+                <span className={`inline-flex items-center gap-1.5 ${loading ? "" : ""}`}>
+                  <span className={loading ? "spin inline-flex" : "inline-flex"}>
+                    <IconRefresh className="h-3.5 w-3.5" />
+                  </span>
+                  刷新数据
+                </span>
+              </ToolbarButton>
+            </div>
+          </header>
+
           {renderContent()}
         </main>
       </div>
+
+      {message ? (
+        <div key={message} className={`toast toast-${messageTone}`} role="status">
+          {message}
+        </div>
+      ) : null}
+
+      <Modal
+        visible={picker.visible}
+        title={picker.title || "选择路径"}
+        subtitle={picker.mode === "file" ? "进入目录后点击文件即可选中，也可以直接在下方输入完整路径。" : "浏览到目标目录后点「选择当前目录」，也可以直接输入完整路径。"}
+        onClose={closePicker}
+      >
+        <div className="grid gap-3">
+          <div className="flex gap-2">
+            <input
+              className="flex-1 font-mono text-[12.5px]"
+              value={picker.manual}
+              placeholder="输入完整路径后回车或点击跳转"
+              onChange={(event) => setPicker((current) => ({ ...current, manual: event.target.value }))}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  void loadPickerPath(picker.manual, picker.mode);
+                }
+              }}
+            />
+            <ToolbarButton onClick={() => void loadPickerPath(picker.manual, picker.mode)} disabled={picker.loading}>
+              跳转
+            </ToolbarButton>
+            {picker.mode === "file" ? (
+              <ToolbarButton primary onClick={() => pickPath(picker.manual)}>使用该路径</ToolbarButton>
+            ) : null}
+          </div>
+
+          <div className="picker-list">
+            {picker.parent !== null && picker.path ? (
+              <button type="button" className="picker-row" onClick={() => void loadPickerPath(picker.parent, picker.mode)}>
+                <span className="card-glyph !h-7 !w-7 !rounded-lg"><IconArrowRight /></span>
+                <span>.. 返回上级</span>
+              </button>
+            ) : null}
+            {picker.loading ? (
+              <div className="empty-inline">读取目录中...</div>
+            ) : (
+              <>
+                {picker.directories.map((dir) => (
+                  <button
+                    key={dir.path}
+                    type="button"
+                    className="picker-row"
+                    onClick={() => void loadPickerPath(dir.path, picker.mode)}
+                  >
+                    <span className="card-glyph !h-7 !w-7 !rounded-lg"><IconFolder className="h-3.5 w-3.5" /></span>
+                    <span className="truncate">{dir.name}</span>
+                  </button>
+                ))}
+                {picker.mode === "file"
+                  ? picker.files.map((file) => (
+                      <button key={file.path} type="button" className="picker-row" onClick={() => pickPath(file.path)}>
+                        <span className="card-glyph !h-7 !w-7 !rounded-lg"><IconFileText className="h-3.5 w-3.5" /></span>
+                        <span className="truncate">{file.name}</span>
+                      </button>
+                    ))
+                  : null}
+                {!picker.directories.length && (picker.mode !== "file" || !picker.files.length) ? (
+                  <div className="empty-inline">该目录下没有可选内容。</div>
+                ) : null}
+              </>
+            )}
+          </div>
+
+          {picker.mode === "dir" ? (
+            <div className="flex justify-end gap-2 border-t pt-3" style={{ borderColor: "var(--line)" }}>
+              <ToolbarButton onClick={closePicker}>取消</ToolbarButton>
+              <ToolbarButton primary onClick={() => pickPath(picker.path || picker.manual)} disabled={picker.loading || !picker.path}>
+                选择当前目录
+              </ToolbarButton>
+            </div>
+          ) : null}
+        </div>
+      </Modal>
+
+      <Modal
+        visible={discover.visible}
+        title="自动扫描执行器命令"
+        subtitle="已在本机 PATH 中扫描常见的 CLI Agent 命令，点击即可填入。"
+        onClose={() => setDiscover((current) => ({ ...current, visible: false }))}
+      >
+        <div className="picker-list">
+          {discover.loading ? (
+            <div className="empty-inline">扫描中...</div>
+          ) : discover.items.length > 0 ? (
+            discover.items.map((item) => (
+              <button
+                key={item.command}
+                type="button"
+                className="picker-row"
+                onClick={() => {
+                  if (discover.executorId) {
+                    handleExecutorChange(discover.executorId, "command", item.command);
+                  }
+                  setDiscover((current) => ({ ...current, visible: false }));
+                }}
+              >
+                <span className="card-glyph !h-7 !w-7 !rounded-lg"><IconBot className="h-3.5 w-3.5" /></span>
+                <span className="min-w-0">
+                  <span className="block font-medium">{item.name}</span>
+                  <span className="block truncate font-mono text-[11.5px]" style={{ color: "var(--ink-faint)" }}>
+                    {item.command}
+                  </span>
+                </span>
+              </button>
+            ))
+          ) : (
+            <div className="empty-inline">
+              没有扫描到已知的 CLI Agent 命令（codex / claude / gemini 等），请用「浏览文件」或手动输入。
+            </div>
+          )}
+        </div>
+      </Modal>
 
       <Modal
         visible={logModal.visible}
         title={logModal.title}
         subtitle={logModal.subtitle}
         onClose={() => setLogModal({ visible: false, title: "", subtitle: "", lines: [] })}
+        wide
       >
-        <div className="log-lines">
-          {logModal.lines.map((line) => (
-            <div key={line} className="log-line">{line}</div>
-          ))}
+        <div className="log-terminal">
+          <div className="log-lines">
+            {logModal.lines.map((line) => (
+              <div key={line} className="log-line">{line}</div>
+            ))}
+          </div>
         </div>
       </Modal>
 
