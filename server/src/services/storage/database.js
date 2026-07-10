@@ -2,7 +2,13 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { storageRoot } from "../../config.js";
+import {
+  defaultClaudeCommand,
+  defaultCodexCommand,
+  defaultRepositoryPath,
+  isDesktopRuntime,
+  storageRoot,
+} from "../../config.js";
 
 const databaseFile = path.join(storageRoot, "blog-tool.db");
 
@@ -19,7 +25,7 @@ function seedSettings(db) {
   `);
 
   [
-    ["blog_repo_path", "E:\\idea_space\\blog"],
+    ["blog_repo_path", defaultRepositoryPath],
     ["blog_branch", "main"],
     ["docs_dir", "_docs"],
     ["auto_push", "true"],
@@ -43,7 +49,7 @@ function seedExecutors(db) {
     id: "codex-default",
     type: "codex",
     name: "Codex Default",
-    command: "F:\\globNodeLib\\codex.cmd",
+    command: defaultCodexCommand,
     argsTemplate: JSON.stringify([
       "exec",
       "-s",
@@ -52,20 +58,20 @@ function seedExecutors(db) {
       "{toolRoot}",
       "-",
     ]),
-    workingDirectory: "E:\\idea_space\\blog",
+    workingDirectory: defaultRepositoryPath,
     timeoutMs: 1800000,
-    enabled: 1,
+    enabled: isDesktopRuntime ? 0 : 1,
   });
 
   insertExecutor.run({
     id: "claude-default",
     type: "claude-code",
     name: "Claude Code Default",
-    command: "C:\\Users\\lmz\\.bun\\bin\\claude.exe",
+    command: defaultClaudeCommand,
     argsTemplate: JSON.stringify(["-p", "{promptContent}"]),
-    workingDirectory: "E:\\idea_space\\blog",
+    workingDirectory: defaultRepositoryPath,
     timeoutMs: 1800000,
-    enabled: 1,
+    enabled: isDesktopRuntime ? 0 : 1,
   });
 }
 

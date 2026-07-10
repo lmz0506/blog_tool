@@ -5,6 +5,9 @@
 /storage/blog-tool.db
 /storage/blog-tool.db-shm
 /storage/blog-tool.db-wal
+/.desktop-storage/
+/.cache/
+/release/
 /.idea/
 /.claude/settings.local.json
 *.log

@@ -1,7 +1,7 @@
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 
-import { projectRoot } from "../config.js";
+import { toolRoot } from "../config.js";
 import { getDatabase } from "./storage/database.js";
 
 const execFileAsync = promisify(execFile);
@@ -290,7 +290,7 @@ export async function testExecutor({ executorId, promptContent }) {
     promptFile: "",
     promptContent,
     runDirectory: executor.workingDirectory,
-    toolRoot: projectRoot,
+    toolRoot,
     categoryName: "executor-test",
   };
 
@@ -338,7 +338,7 @@ export async function runExecutor({ executorId, promptContent, runType, metadata
     promptFile: "",
     promptContent,
     runDirectory: executor.workingDirectory,
-    toolRoot: projectRoot,
+    toolRoot,
     categoryName: metadata.categoryName,
   };
   const args = executor.argsTemplate.map((value) => replaceTemplate(value, context));

@@ -1,4 +1,5 @@
 import { getDatabase } from "./storage/database.js";
+import { defaultRepositoryPath } from "../config.js";
 
 export function getSetting(key) {
   const row = getDatabase().prepare("SELECT value FROM settings WHERE key = ?").get(key);
@@ -17,7 +18,7 @@ export function setSetting(key, value) {
 
 export function getRepositorySettings() {
   return {
-    path: getSetting("blog_repo_path") || "E:\\idea_space\\blog",
+    path: getSetting("blog_repo_path") ?? defaultRepositoryPath,
     branch: getSetting("blog_branch") || "main",
     docsDir: getSetting("docs_dir") || "_docs",
     autoPush: (getSetting("auto_push") || "true") === "true",

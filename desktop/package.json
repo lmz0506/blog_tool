@@ -1,0 +1,7 @@
+{
+  "name": "blog-tool-desktop-runtime",
+  "version": "0.1.0",
+  "description": "Electron runtime package for BlogTool.",
+  "author": "lmz0506",
+  "main": "main.cjs"
+}

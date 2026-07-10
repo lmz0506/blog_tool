@@ -4,7 +4,7 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        mono: ['"IBM Plex Mono"', "Consolas", "monospace"],
+        mono: ['"Cascadia Mono"', '"SFMono-Regular"', "Consolas", "monospace"],
       },
     },
   },

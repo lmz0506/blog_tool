@@ -1,17 +1,36 @@
 {
   "name": "blog-tool",
   "version": "0.1.0",
+  "description": "InkStone desktop and web tooling for automated blog writing workflows.",
+  "author": "lmz0506",
   "private": true,
+  "main": "desktop/main.cjs",
   "workspaces": [
     "server",
     "web"
   ],
   "scripts": {
-    "install:all": "npm install --workspaces",
+    "install:all": "npm install --workspaces --include-workspace-root",
     "dev": "node scripts/dev.mjs",
     "dev:server": "npm run dev --workspace server",
     "dev:web": "npm run dev --workspace web",
     "build": "npm run build --workspace web",
-    "start": "npm run start --workspace server"
+    "start": "npm run start --workspace server",
+    "start:desktop": "npm run build && electron .",
+    "dist:win": "npm run build && electron-builder --config electron-builder.config.cjs --win nsis --publish never",
+    "dist:win:publish": "npm run build && electron-builder --config electron-builder.config.cjs --win nsis --publish always"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "electron-updater": "^6.8.9",
+    "express": "^4.21.2",
+    "gray-matter": "^4.0.3",
+    "pino": "^9.3.2",
+    "pino-http": "^10.3.0",
+    "simple-git": "^3.28.0"
+  },
+  "devDependencies": {
+    "electron": "^43.1.0",
+    "electron-builder": "^26.15.3"
   }
 }
