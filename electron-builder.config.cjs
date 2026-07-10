@@ -59,6 +59,7 @@ module.exports = {
   },
   publish: resolveGitHubPublish(),
   electronUpdaterCompatibility: ">=2.16",
+  beforeBuild: "scripts/sync-desktop-package.cjs",
   afterPack: "scripts/electron-after-pack.cjs",
   nsis: {
     oneClick: false,

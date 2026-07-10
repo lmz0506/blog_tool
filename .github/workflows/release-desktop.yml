@@ -41,6 +41,9 @@ jobs:
       - name: Build web assets
         run: npm run build
 
+      - name: Sync desktop runtime package version
+        run: npm run sync:desktop-package
+
       - name: Build installer for manual download
         if: github.event_name == 'workflow_dispatch'
         shell: pwsh
