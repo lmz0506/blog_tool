@@ -1,4 +1,4 @@
-const { existsSync } = require("node:fs");
+const { cpSync, existsSync, mkdirSync, readdirSync } = require("node:fs");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 
@@ -38,8 +38,52 @@ function getRuntimeRoot() {
   return app.isPackaged ? path.join(process.resourcesPath, "app-runtime") : app.getAppPath();
 }
 
+function getPackagedStorageRoot() {
+  const installRoot = getInstallRoot();
+  const installDriveRoot = path.parse(installRoot).root;
+
+  if (!installDriveRoot) {
+    return path.join(installRoot, "storage-data");
+  }
+
+  return path.join(installDriveRoot, "BlogToolData", "storage");
+}
+
+function getLegacyPackagedStorageRoot() {
+  return path.join(getInstallRoot(), "storage");
+}
+
 function getStorageRoot() {
-  return app.isPackaged ? path.join(getInstallRoot(), "storage") : path.join(app.getAppPath(), ".desktop-storage");
+  return app.isPackaged ? getPackagedStorageRoot() : path.join(app.getAppPath(), ".desktop-storage");
+}
+
+function hasStorageData(storageRoot) {
+  if (!existsSync(storageRoot)) {
+    return false;
+  }
+
+  return readdirSync(storageRoot).length > 0;
+}
+
+function migrateLegacyStorageIfNeeded() {
+  if (!app.isPackaged) {
+    return;
+  }
+
+  const legacyStorageRoot = getLegacyPackagedStorageRoot();
+  const storageRoot = getPackagedStorageRoot();
+
+  if (!hasStorageData(legacyStorageRoot) || hasStorageData(storageRoot)) {
+    return;
+  }
+
+  mkdirSync(storageRoot, { recursive: true });
+
+  for (const entryName of readdirSync(legacyStorageRoot)) {
+    cpSync(path.join(legacyStorageRoot, entryName), path.join(storageRoot, entryName), { recursive: true });
+  }
+
+  console.info(`Migrated storage from ${legacyStorageRoot} to ${storageRoot}`);
 }
 
 function canUseAutoUpdater() {
@@ -54,6 +98,8 @@ async function importServerModule() {
 }
 
 async function startEmbeddedServer() {
+  migrateLegacyStorageIfNeeded();
+
   process.env.BLOG_TOOL_RUNTIME = "desktop";
   process.env.BLOG_TOOL_PROJECT_ROOT = getRuntimeRoot();
   process.env.BLOG_TOOL_TOOL_ROOT = getRuntimeRoot();
