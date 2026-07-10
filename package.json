@@ -11,15 +11,14 @@
   ],
   "scripts": {
     "install:all": "npm install --workspaces --include-workspace-root",
-    "sync:desktop-package": "node scripts/sync-desktop-package.cjs",
     "dev": "node scripts/dev.mjs",
     "dev:server": "npm run dev --workspace server",
     "dev:web": "npm run dev --workspace web",
     "build": "npm run build --workspace web",
     "start": "npm run start --workspace server",
-    "start:desktop": "npm run build && npm run sync:desktop-package && electron .",
-    "dist:win": "npm run build && npm run sync:desktop-package && electron-builder --config electron-builder.config.cjs --win nsis --publish never",
-    "dist:win:publish": "npm run build && npm run sync:desktop-package && electron-builder --config electron-builder.config.cjs --win nsis --publish always"
+    "start:desktop": "npm run build && electron .",
+    "dist:win": "npm run build && electron-builder --config electron-builder.config.cjs --win nsis --publish never",
+    "dist:win:publish": "npm run build && electron-builder --config electron-builder.config.cjs --win nsis --publish always"
   },
   "dependencies": {
     "cors": "^2.8.5",

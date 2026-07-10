@@ -30,9 +30,16 @@ jobs:
         shell: pwsh
         run: |
           $packageVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $desktopPackageVersion = (Get-Content desktop/package.json -Raw | ConvertFrom-Json).version
           $tagVersion = "${{ github.ref_name }}" -replace '^v', ''
           if ($packageVersion -ne $tagVersion) {
             throw "package.json version ($packageVersion) does not match tag version ($tagVersion)."
+          }
+          if ($desktopPackageVersion -ne $tagVersion) {
+            throw "desktop/package.json version ($desktopPackageVersion) does not match tag version ($tagVersion)."
+          }
+          if ($desktopPackageVersion -ne $packageVersion) {
+            throw "desktop/package.json version ($desktopPackageVersion) does not match package.json version ($packageVersion)."
           }
 
       - name: Install dependencies
@@ -40,9 +47,6 @@ jobs:
 
       - name: Build web assets
         run: npm run build
-
-      - name: Sync desktop runtime package version
-        run: npm run sync:desktop-package
 
       - name: Build installer for manual download
         if: github.event_name == 'workflow_dispatch'
