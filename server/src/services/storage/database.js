@@ -56,8 +56,6 @@ function seedExecutors(db) {
       "workspace-write",
       "--add-dir",
       "{runDirectory}",
-      "--add-dir",
-      "{toolRoot}",
       "-",
     ]),
     workingDirectory: defaultRepositoryPath,
@@ -445,6 +443,47 @@ function migrateCodexExecutorRunDirectoryAccess(db) {
   });
 }
 
+function migrateCodexExecutorRemoveToolRootAccess(db) {
+  // 工具安装目录会在每次升级时被卸载重装：其上已登记的 codex 沙箱 ACL 授权随之丢失，且新目录
+  // 属主为 Administrators，由本工具后台静默拉起的 codex 无法重新授权，导致 Windows 沙箱
+  // 初始化整体失败（setup refresh had errors）、Agent 对所有目录（含博客仓库）的写入被拒。
+  // Prompt 已走 stdin、结果已走 stdout，Agent 不需要工具目录的写权限，移除 --add-dir {toolRoot}。
+  const rows = db.prepare("SELECT id, type, args_template FROM executors").all();
+  const update = db.prepare(`
+    UPDATE executors
+    SET args_template = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `);
+
+  rows.forEach((row) => {
+    if (row.type !== "codex") {
+      return;
+    }
+
+    let args;
+    try {
+      args = JSON.parse(row.args_template);
+    } catch {
+      return;
+    }
+
+    if (!Array.isArray(args)) {
+      return;
+    }
+
+    const next = [...args];
+    let index = next.findIndex((value, i) => value === "--add-dir" && next[i + 1] === "{toolRoot}");
+    while (index >= 0) {
+      next.splice(index, 2);
+      index = next.findIndex((value, i) => value === "--add-dir" && next[i + 1] === "{toolRoot}");
+    }
+
+    if (JSON.stringify(next) !== JSON.stringify(args)) {
+      update.run(JSON.stringify(next), row.id);
+    }
+  });
+}
+
 function migrateSchema(db) {
   [
     ["task_runs", "prompt_text TEXT"],
@@ -463,6 +502,7 @@ function migrateSchema(db) {
   backfillDraftTexts(db);
   migrateExecutorToolRoot(db);
   migrateCodexExecutorRunDirectoryAccess(db);
+  migrateCodexExecutorRemoveToolRootAccess(db);
   migrateCategoriesDefaultPool(db);
   migrateExecutorTimeout(db);
 }

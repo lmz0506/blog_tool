@@ -1,6 +1,6 @@
 {
   "name": "blog-tool",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "InkStone desktop and web tooling for automated blog writing workflows.",
   "author": "lmz0506",
   "private": true,

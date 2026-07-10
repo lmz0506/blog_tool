@@ -144,9 +144,16 @@ function createTray() {
   });
 
   tray = new Tray(trayIcon);
-  tray.setToolTip("BlogTool");
+  tray.setToolTip(`BlogTool v${app.getVersion()}`);
   tray.setContextMenu(
     Menu.buildFromTemplate([
+      {
+        label: `BlogTool v${app.getVersion()}`,
+        enabled: false,
+      },
+      {
+        type: "separator",
+      },
       {
         label: "打开 BlogTool",
         click: restoreMainWindow,
@@ -192,7 +199,9 @@ function requestQuitAndInstallUpdate() {
   closeServer()
     .catch(() => {})
     .finally(() => {
-      autoUpdater.quitAndInstall(false, true);
+      // 静默安装 + 安装完成后自动启动新版本。
+      // 注意 isForceRunAfter 在非静默模式下会被忽略（向导装完不会自动重启），必须配合 isSilent=true
+      autoUpdater.quitAndInstall(true, true);
     });
 }
 
@@ -294,9 +303,11 @@ async function createMainWindow() {
     icon: getAppIconPath(),
     autoHideMenuBar: true,
     backgroundColor: "#f4efe6",
-    title: "BlogTool",
+    title: `砚台 · 博客自动写作台 v${app.getVersion()}`,
   });
   mainWindow = window;
+  // 页面自带的 <title> 会在加载后覆盖窗口标题，阻止覆盖以保留版本号
+  window.on("page-title-updated", (event) => event.preventDefault());
   createTray();
 
   window.on("close", (event) => {

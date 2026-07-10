@@ -1,7 +1,7 @@
 {
   "name": "blog-tool-desktop-runtime",
-  "version": "0.1.2",
-  "description": "Electron runtime package for BlogTool.",
+  "version": "0.1.3",
+  "description": "BlogTool 博客自动写作桌面应用",
   "author": "lmz0506",
   "main": "main.cjs"
 }
