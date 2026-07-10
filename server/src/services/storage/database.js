@@ -55,6 +55,8 @@ function seedExecutors(db) {
       "-s",
       "workspace-write",
       "--add-dir",
+      "{runDirectory}",
+      "--add-dir",
       "{toolRoot}",
       "-",
     ]),
@@ -400,6 +402,49 @@ function migrateExecutorTimeout(db) {
   db.prepare("INSERT INTO settings (key, value) VALUES ('migration_executor_timeout_30m', 'done')").run();
 }
 
+function migrateCodexExecutorRunDirectoryAccess(db) {
+  // 安装版里 codex 仅追加了 {toolRoot}，在部分环境下不足以让 Agent 对博客仓库目录获得稳定写权限。
+  // 对使用 workspace-write 的 codex 执行器自动补上 --add-dir {runDirectory}。
+  const rows = db.prepare("SELECT id, type, args_template FROM executors").all();
+  const update = db.prepare(`
+    UPDATE executors
+    SET args_template = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `);
+
+  rows.forEach((row) => {
+    if (row.type !== "codex") {
+      return;
+    }
+
+    let args;
+    try {
+      args = JSON.parse(row.args_template);
+    } catch {
+      return;
+    }
+
+    if (!Array.isArray(args) || !args.includes("workspace-write") || args.includes("{runDirectory}")) {
+      return;
+    }
+
+    const toolRootIndex = args.findIndex((value, index) => value === "--add-dir" && args[index + 1] === "{toolRoot}");
+    const next = [...args];
+
+    if (toolRootIndex >= 0) {
+      next.splice(toolRootIndex, 0, "--add-dir", "{runDirectory}");
+    } else {
+      const stdinIndex = next.lastIndexOf("-");
+      const insertAt = stdinIndex >= 0 ? stdinIndex : next.length;
+      next.splice(insertAt, 0, "--add-dir", "{runDirectory}");
+    }
+
+    if (JSON.stringify(next) !== JSON.stringify(args)) {
+      update.run(JSON.stringify(next), row.id);
+    }
+  });
+}
+
 function migrateSchema(db) {
   [
     ["task_runs", "prompt_text TEXT"],
@@ -417,6 +462,7 @@ function migrateSchema(db) {
   backfillTaskRunTexts(db);
   backfillDraftTexts(db);
   migrateExecutorToolRoot(db);
+  migrateCodexExecutorRunDirectoryAccess(db);
   migrateCategoriesDefaultPool(db);
   migrateExecutorTimeout(db);
 }
